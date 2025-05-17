@@ -2,12 +2,6 @@
 
 Master Zero-Knowledge Proof (ZKP) by recreating ZKP system from scratch.
 
-从0到1构建零知识证明系统.
-
-## Language Selection
-- [English](en/README.md)
-- [中文](zh/README.md)
-
 ## 🌟 Introduction
 This repository, [build-your-own-zkp](https://github.com/sure2web3/build-your-own-zkp), is like a magical portal 🚪 that guides you through the fascinating journey of mastering Zero-Knowledge Proof (ZKP) from the ground up. Zero-Knowledge Proofs are like a superpower in the cryptographic world. They allow one party (the prover) to prove to another party (the verifier) that a statement is true, without revealing any extra information other than the fact that the statement is indeed true. It's like proving you know a secret without actually sharing it! 🤫
 
@@ -37,7 +31,7 @@ In addition to the written documentation and code examples in this repository, w
 - Since the Halo 2 implementation is in Rust, it's a good idea to be familiar with the Rust programming language. It's like speaking the local language in a foreign land! 🌍
 
 ## 📄 License
-This project is licensed under the **MIT License**. Check out the [LICENSE](LICENSE) file for all the details.  
+This project is licensed under the **MIT License**. Check out the [LICENSE](../LICENSE) file for all the details.  
 
 **Important Notice**:  
 Some parts of this project are inspired by the **Halo 2** library developed by the Electric Coin Company (ECC), which is also licensed under the [MIT License](https://opensource.org/licenses/MIT). When you use or distribute this software, you need to follow both licenses. It's like following the rules of two different clubs! 🏌️‍♂️
