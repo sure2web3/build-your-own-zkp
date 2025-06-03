@@ -1,5 +1,7 @@
 ### Detailed Implementation of the Circuit Module
+![alt text](circuit.png)
 
+In Halo2, **columns** are fundamental structures that organize data in a circuit. There are three main types: **advice columns** (for private witness data provided by the prover), **instance columns** (for public inputs known to both the prover and verifier), and **fixed columns** (for precomputed constants or values set during circuit setup). A **cell** refers to a specific location within a column at a given row, identified by a column and a **rotation** (row offset). Cells are queried using `VirtualCells` to build constraints. A **region** is a contiguous block of rows where gates and constraints are applied. Columns and their cells are grouped into regions to define computational steps, with **selectors** enabling conditional enforcement of constraints within these regions. Together, these components form the backbone of circuit layout and constraint definition in Halo2.
 #### 1. Core Types and Traits Definition
 - **Column Types**: In `src/plonk/circuit.rs`, several column types are defined. `ColumnType` is a trait that represents a column type. There are three concrete column types: `Advice`, `Fixed`, and `Instance`, along with an enum `Any` that can represent any of these three types.
     ```rust
@@ -1034,11 +1036,53 @@ classDiagram
     | `degree()` | Computes the degree of the constraint system, which is the maximum degree of all constraints.<br><br> This function computes the maximum degree required by the constraint system by taking the highest degree among the permutation argument, all lookup arguments, all gate polynomials, and the user-specified minimum degree. This ensures the system uses a large enough domain for all constraints. | The degree of the constraint system is important for determining the size of the polynomial domain and the complexity of the circuit. |
     | `lookup(table_map: impl FnOnce(&mut VirtualCells<'_, F>) -> Vec<(Expression<F>, TableColumn)>) -> usize` | Adds a lookup argument for input expressions and table columns.<br><br> `table_map` returns a map between input expressions and the table columns they need to match.<br><br> This function adds a new lookup argument to the constraint system by mapping input expressions to table columns, ensuring no simple selectors are used in the inputs, and registering the lookup for later use in the circuit. It returns the index of the newly added lookup argument. | Lookup arguments are used to check if certain values in the input expressions match values in the table columns, which is useful for implementing complex operations like range checks. |
     | `create_gate<C: Into<Constraint<F>>, Iter: IntoIterator<Item = C>>(name: &'static str, constraints: impl FnOnce(&mut VirtualCells<'_, F>) -> Iter)` | Creates a new gate with the given name and constraints. This method will panic if `constraints` returns an empty iterator, because Gates must contain at least one constraint.<br><br> This function creates a new gate in the constraint system. It takes a name and a closure that generates constraints using a `VirtualCells` context. The closure is called to produce the constraints, and the function collects the names and polynomial expressions from them. It also records which selectors and cells were queried. The function asserts that at least one constraint is provided, then adds a new Gate with all this information to the system. This ensures each gate is well-defined and tracks all relevant queries for circuit synthesis. | Gates are used to define the logical rules and constraints of the circuit. Each gate contains one or more polynomial constraints. |
-    | `compress_selectors(selectors: Vec<Vec<bool>>)` | Compresses selectors together based on their assignments, adds new fixed columns, and returns the polynomials for those columns. | Selector compression helps in optimizing the use of fixed columns by combining multiple selectors into a single column, reducing the overall circuit size. |
-    | `blinding_factors()` | Computes the number of blinding factors necessary to perfectly blind the prover's witness polynomials. | Blinding factors are used to protect the privacy of the prover's witness values during the proof generation process. |
-    | `minimum_rows()` | Returns the minimum number of rows needed to account for blinding factors and other requirements. | This value is used to ensure that the circuit has enough rows to accommodate all the necessary computations and constraints. |
+    | `compress_selectors(selectors: Vec<Vec<bool>>)` | Compresses selectors together based on their assignments, adds new fixed columns, and returns the polynomials for those columns.<br><br> TODO(sure2web3): This function depends on `compress_selectors` | Selector compression helps in optimizing the use of fixed columns by combining multiple selectors into a single column, reducing the overall circuit size.<br><br> The `compress_selectors` function optimizes the use of selectors in a Halo2 circuit. Selectors are boolean flags (per row) that enable or disable constraints (gates). This function: Compresses multiple selectors into a minimal set of fixed columns. Updates the constraint system to use these new columns. Returns the updated constraint system and the polynomials for the new selector columns. This is important for efficiency and for ensuring the circuit’s structure matches the actual selector usage.<br><br> This will compress selectors together depending on their provided assignments. This `ConstraintSystem` will then be modified to add new fixed columns (representing the actual selectors) and will return the polynomials for those columns. Finally, an internal map is updated to find which fixed column corresponds with a given `Selector`. |
+    | `blinding_factors()` | Computes the number of blinding factors necessary to perfectly blind the prover's witness polynomials. | Blinding factors are random values added to the witness polynomials to ensure zero-knowledge.<br><br>Blinding factors are used to protect the privacy of the prover's witness values during the proof generation process. |
+    | `minimum_rows()` | Returns the minimum number of rows needed to account for blinding factors and other requirements. | This value is used to ensure that the circuit has enough rows to accommodate all the necessary computations and constraints.<br><br> The minimum number of rows ensures there is enough space in the circuit for all blinding factors, special polynomial roles, and at least one usable row for computation. This is critical for the soundness and security of the proof system. |
 
-#### 6. Chip and Circuit Components
+#### 9. Circuit
+- **Circuit Trait**: This is a trait that circuits provide implementations for so that the backend prover can ask the circuit to synthesize using some given [`ConstraintSystem`] implementation.
+    ```rust
+    pub trait Circuit<F: Field> {
+        /// This is a configuration object that stores things like columns.
+        type Config: Clone;
+        /// The floor planner used for this circuit. This is an associated type of the
+        /// `Circuit` trait because its behaviour is circuit-critical.
+        type FloorPlanner: FloorPlanner;
+
+        /// Returns a copy of this circuit with no witness values (i.e. all witnesses set to
+        /// `None`). For most circuits, this will be equal to `Self::default()`.
+        fn without_witnesses(&self) -> Self;
+
+        /// The circuit is given an opportunity to describe the exact gate
+        /// arrangement, column arrangement, etc.
+        fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config;
+
+        /// Given the provided `cs`, synthesize the circuit. The concrete type of
+        /// the caller will be different depending on the context, and they may or
+        /// may not expect to have a witness present.
+        fn synthesize(&self, config: Self::Config, layouter: impl Layouter<F>) -> Result<(), Error>;
+    }
+    ```
+* Implementing the Circuit trait is how you describe both the structure and the 
+logic of your custom circuit in Halo2. The trait ensures a clear separation 
+between configuration (structure) and synthesis (assignment and constraint 
+enforcement), which is essential for secure and flexible zero-knowledge proof 
+systems.
+
+#### TODO(sure2web3): There are a lot of other traits that are used above which should be documented before the above crates.
+
+- lookup
+- permutation
+- Assigned
+- Error
+- Layouter
+- Region
+- Value
+- Rotation
+- compress_selectors
+
+#### 10. Chip
 - **Chip Trait**: The `Chip` trait defines a set of instructions that can be used by gadgets. It stores configuration and loaded state, which are used during circuit synthesis.
 ```rust
 pub trait Chip<F: Field>: Sized {
@@ -1050,7 +1094,7 @@ pub trait Chip<F: Field>: Sized {
 }
 ```
 
-#### 7. Cell and AssignedCell
+#### 11. Cell and AssignedCell
 - **Cell**: A `Cell` is a pointer to a cell within a circuit, identified by a region index, row offset, and column.
 ```rust
 pub struct Cell {
