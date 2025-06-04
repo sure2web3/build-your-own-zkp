@@ -1082,46 +1082,179 @@ systems.
 - Rotation
 - compress_selectors
 
-#### 10. Chip
-- **Chip Trait**: The `Chip` trait defines a set of instructions that can be used by gadgets. It stores configuration and loaded state, which are used during circuit synthesis.
-```rust
-pub trait Chip<F: Field>: Sized {
-    type Config: fmt::Debug + Clone;
-    type Loaded: fmt::Debug + Clone;
+#### RegionIndex and RegionStart
+The `RegionIndex` and `RegionStart` play important roles in this process:
+- **`RegionIndex`**: It helps in identifying and referring to different regions. This is useful when multiple regions are defined in a circuit, and the layouter needs to manage them efficiently. For example, during the measurement and assignment phases of the circuit synthesis, the layouter may need to access and manipulate specific regions based on their indices.
+- **`RegionStart`**: It determines the starting position of a region within the circuit layout. This is essential for ensuring that different regions do not overlap and that the overall circuit is well - organized. The starting row information is used when assigning cells and constraints within a region.
+```mermaid
+classDiagram
+    class RegionIndex {
+        - usize 0
+        + from(usize) RegionIndex
+        + deref(): &usize
+    }
 
-    fn config(&self) -> &Self::Config;
-    fn loaded(&self) -> &Self::Loaded;
-}
+    class RegionStart {
+        - usize 0
+        + from(usize) RegionStart
+        + deref(): &usize
+    }
+
+    RegionIndex --|>  From~usize~ : impl
+    RegionIndex --|> Deref : impl
+    RegionStart --|> From~usize~ : impl
+    RegionStart --|> Deref : impl
 ```
+- **RegionIndex**: It serves as an index to uniquely identify a `region` within a layouter. A `layouter` in Halo2 is responsible for organizing and assigning `cells` in a `circuit`, and different regions can be thought of as separate sub - areas within this circuit layout.
+    * It is a newtype wrapper around `usize`. The `From<usize>` trait is implemented, allowing easy conversion from a plain `usize` value to a `RegionIndex`. The `Deref` trait is also implemented, which means that a `RegionIndex` can be treated as a reference to a `usize` in many contexts.
+
+    ```rust
+    /// Index of a region in a layouter
+    #[derive(Clone, Copy, Debug)]
+    pub struct RegionIndex(usize);
+
+    impl From<usize> for RegionIndex {
+        fn from(idx: usize) -> RegionIndex {
+            RegionIndex(idx)
+        }
+    }
+
+    impl std::ops::Deref for RegionIndex {
+        type Target = usize;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    ```
+
+- **RegionStart**: It represents the starting row of a region in a layouter. This is crucial for determining the position of a region within the overall circuit layout.
+    ```rust
+    /// Starting row of a region in a layouter
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct RegionStart(usize);
+
+    impl From<usize> for RegionStart {
+        fn from(idx: usize) -> RegionStart {
+            RegionStart(idx)
+        }
+    }
+
+    impl std::ops::Deref for RegionStart {
+        type Target = usize;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    ```
+
+#### RegionLayouter
+
+#### Region
 
 #### 11. Cell and AssignedCell
-- **Cell**: A `Cell` is a pointer to a cell within a circuit, identified by a region index, row offset, and column.
-```rust
-pub struct Cell {
-    region_index: RegionIndex,
-    row_offset: usize,
-    column: Column<Any>,
-}
-```
-
-- **AssignedCell**: An `AssignedCell` holds a value and a cell. It provides methods to access the value and copy the value to another advice cell with equality constraints.
-```rust
-pub struct AssignedCell<V, F: Field> {
-    value: Value<V>,
-    cell: Cell,
-    _marker: PhantomData<F>,
-}
-
-impl<V, F: Field> AssignedCell<V, F> {
-    pub fn value(&self) -> Value<&V> {
-        self.value.as_ref()
+```mermaid
+classDiagram
+    class Cell {
+        - RegionIndex region_index
+        - usize row_offset
+        - Column~Any~ column
     }
 
-    pub fn cell(&self) -> Cell {
-        self.cell
+    class AssignedCell {
+        - Value~V~ value
+        - Cell cell
+        - PhantomData~F~ _marker
+        + value() Value~&V~
+        + cell() Cell
+        + value_field() Value~Assigned< F>~
+        + evaluate() AssignedCell~F, F~
+        + copy_advice(annotation, region, column, offset) Result~Self, Error~
     }
-}
+
+    AssignedCell "1" -- "1" Cell : contains
 ```
+
+- **Cell**: A `Cell` is a pointer to a cell within a circuit, identified by a region index, row offset, and column. This information is crucial for precisely locating and referring to cells during circuit construction and synthesis.
+
+    ```rust
+    /// A pointer to a cell within a circuit.
+    #[derive(Clone, Copy, Debug)]
+    pub struct Cell {
+        /// Identifies the region in which this cell resides.
+        region_index: RegionIndex,
+        /// The relative offset of this cell within its region.
+        row_offset: usize,
+        /// The column of this cell.
+        column: Column<Any>,
+    }
+    ```
+
+- **AssignedCell**: An `AssignedCell` represents a cell that has been assigned a value within the circuit. It contains the value (`Value<V>`) assigned to the cell and the `Cell` itself. The `PhantomData<F>` is used to indicate the field type `F` without actually storing an instance of it. It provides methods to access the value and copy the value to another advice cell with equality constraints. 
+    ```rust
+    /// An assigned cell.
+    #[derive(Clone, Debug)]
+    pub struct AssignedCell<V, F: Field> {
+        value: Value<V>,
+        cell: Cell,
+        _marker: PhantomData<F>,
+    }
+    ```
+
+- **Functions**:
+
+    | Function Signature | Functionality | Principle or Role in Halo2 |
+    | --- | --- | --- |
+    | `pub fn value(&self) -> Value<&V>` | Returns a reference to the value of the `AssignedCell`. | In Halo2, cells are the basic units for storing values in a circuit. This function allows users to access the value assigned to a specific cell. It provides a way to read the value without taking ownership, which is important for maintaining the integrity of the circuit's state. The `Value` type can represent either a known value or an unknown value, which is useful during the circuit construction process where some values may not be known until later. |
+    | `pub fn cell(&self) -> Cell` | Returns the `Cell` that the assigned cell refers to. | The `Cell` struct contains information about the location of the cell within the circuit, such as the region index, row offset, and column. This function allows users to retrieve this location information, which is crucial for performing operations like cell constraints and value assignments in the correct context. In Halo2, the layout of cells in regions and columns is carefully managed to ensure the circuit's correctness and efficiency. |
+    | `pub fn value_field(&self) -> Value<Assigned<F>> where for<'v> Assigned<F>: From<&'v V>` | Returns the field element value of the `AssignedCell`. | In cryptographic circuits, values are often represented as elements of a finite field. This function converts the value of the `AssignedCell` to a field element (`Assigned<F>`). The `Assigned` type is used to represent values that have been assigned to cells, and it can handle values in different forms (e.g., zero, trivial, or rational). This conversion is necessary for performing arithmetic operations and enforcing constraints within the circuit. |
+    | `pub fn evaluate(self) -> AssignedCell<F, F>` | Evaluates this assigned cell's value directly, performing an unbatched inversion if necessary. If the denominator is zero, the returned cell's value is zero. | In some cryptographic protocols, values may be represented as fractions to enable batch inversion for efficiency. However, in certain cases, an unbatched inversion may be required. This function evaluates the cell's value, performing the necessary inversion if the value is represented as a fraction. If the denominator is zero, it ensures that the resulting value is zero, which is a common convention in field arithmetic. This evaluation step is important for obtaining the final value that can be used in subsequent operations in the circuit. |
+    | `pub fn copy_advice<A, AR>(&self, annotation: A, region: &mut Region<'_, F>, column: Column<Advice>, offset: usize) -> Result<Self, Error> where A: Fn() -> AR, AR: Into<String>, V: Clone, for<'v> Assigned<F>: From<&'v V>` | Copies the value to a given advice cell and constrains them to be equal. Returns an error if either this cell or the given cell are in columns where equality has not been enabled. | In Halo2, advice columns are used to store witness values that are not publicly known. This function allows users to copy the value of an existing `AssignedCell` to a new advice cell. It also enforces an equality constraint between the two cells, ensuring that they have the same value. This is useful for creating redundant copies of values or for propagating values between different parts of the circuit. The annotation is used to provide a descriptive name for the operation, which can be helpful for debugging and auditing the circuit. |
+
+#### Table
+
+#### NamespacedLayouter
+
+#### Layouter
+
+#### 10. Chip
+- **Chip Trait**: The `Chip` trait represents a set of instructions used by gadgets in the circuit. It stores configuration and loaded state information required during circuit synthesis. The `Config` type holds the configuration for the chip, which can be derived during the `Circuit::configure` phase. The `Loaded` type holds any general chip state that needs to be loaded at the start of `Circuit::synthesize`.
+
+    ```rust
+    /// The chip stores state that is required at circuit synthesis time in
+    /// [`Chip::Config`], which can be fetched via [`Chip::config`].
+    ///
+    /// The chip also loads any fixed configuration needed at synthesis time
+    /// using its own implementation of `load`, and stores it in [`Chip::Loaded`].
+    /// This can be accessed via [`Chip::loaded`].
+    pub trait Chip<F: Field>: Sized {
+        /// A type that holds the configuration for this chip, and any other state it may need
+        /// during circuit synthesis, that can be derived during [`Circuit::configure`].
+        ///
+        /// [`Circuit::configure`]: crate::plonk::Circuit::configure
+        type Config: fmt::Debug + Clone;
+
+        /// A type that holds any general chip state that needs to be loaded at the start of
+        /// [`Circuit::synthesize`]. This might simply be `()` for some chips.
+        ///
+        /// [`Circuit::synthesize`]: crate::plonk::Circuit::synthesize
+        type Loaded: fmt::Debug + Clone;
+
+        /// The chip holds its own configuration.
+        fn config(&self) -> &Self::Config;
+
+        /// Provides access to general chip state loaded at the beginning of circuit
+        /// synthesis.
+        ///
+        /// Panics if called before `Chip::load`.
+        fn loaded(&self) -> &Self::Loaded;
+    }
+    ```
+    * Chips are the building blocks of Halo2 circuits. Each chip defines its own configuration and logic, and can be used by gadgets (higher-level abstractions) to build complex circuits.
+    * The `Config` type allows each chip to specify what columns and selectors it needs.
+    * The `Loaded` type allows chips to store any precomputed or loaded data needed during synthesis.
+    * The trait methods provide access to this configuration and state, ensuring encapsulation and modularity.
 
 ### Module Dependencies
 - The `circuit.rs` file depends on the `plonk/circuit.rs` for column types, selectors, and other basic circuit components.
