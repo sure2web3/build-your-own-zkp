@@ -1153,6 +1153,89 @@ classDiagram
 
 #### Region
 
+```mermaid
+classDiagram
+    class Region {
+        - &'r mut dyn layouter::RegionLayouter~F~ region
+        + enable_selector(annotation, selector, offset) Result~（）, Error~
+        + assign_advice(annotation, column, offset, to) Result< AssignedCell< VR, F>, Error>
+        + assign_advice_from_constant(annotation, column, offset, constant) Result< AssignedCell< VR, F>, Error>
+        + assign_advice_from_instance(annotation, instance, row, advice, offset) Result< AssignedCell< F, F>, Error>
+        + instance_value(instance, row) Result~Value< F>, Error~
+        + assign_fixed(annotation, column, offset, to) Result< AssignedCell< VR, F>, Error>
+        + constrain_constant(cell, constant) Result~（）, Error~
+        + constrain_equal(left, right) Result~（）, Error~
+    }
+
+    class AssignedCell {
+        - Value~VR~ value
+        - Cell cell
+        - PhantomData~F~ _marker
+    }
+
+    class Cell {
+        - RegionIndex region_index
+        - usize row_offset
+        - Column~Any~ column
+    }
+
+    class Value {
+        - ...
+    }
+
+    class Column {
+        - ...
+    }
+
+    class Selector {
+        - ...
+    }
+
+    Region --> AssignedCell : returns
+    Region --> Cell : uses
+    Region --> Value : uses
+    Region --> Column : uses
+    Region --> Selector : uses
+    AssignedCell --> Cell : contains
+    AssignedCell --> Value : contains
+```
+
+- **Region**: A `Region` represents a contiguous block of rows in the circuit where a chip can assign values to cells. Regions allow chips to use relative row offsets for assignments, making circuit construction modular and flexible. The `Layouter` manages these regions and can optimize how they are placed in the final circuit. Regions are essential for organizing assignments, enabling selectors, and enforcing constraints (like equality or constants) between cells.
+    * All of the methods implemented on the `Region` struct ultimately delegate their functionality to the underlying `region: &'r mut dyn layouter::RegionLayouter<F>` field. 
+    * This means that when you call a method like `assign_advice`, `assign_fixed`, `constrain_equal`, or any other assignment or constraint function on a `Region`, it internally calls the corresponding method on the `RegionLayouter` trait object. 
+    * This design allows Region to provide a high-level, chip-friendly API while relying on the lower-level layouter implementation for the actual circuit assignment and constraint logic.
+
+    ```rust 
+    /// A region of the circuit in which a [`Chip`] can assign cells.
+    ///
+    /// Inside a region, the chip may freely use relative offsets; the [`Layouter`] will
+    /// treat these assignments as a single "region" within the circuit.
+    ///
+    /// The [`Layouter`] is allowed to optimise between regions as it sees fit. Chips must use
+    /// [`Region::constrain_equal`] to copy in variables assigned in other regions.
+    ///
+    /// TODO: It would be great if we could constrain the columns in these types to be
+    /// "logical" columns that are guaranteed to correspond to the chip (and have come from
+    /// `Chip::Config`).
+    #[derive(Debug)]
+    pub struct Region<'r, F: Field> {
+        region: &'r mut dyn layouter::RegionLayouter<F>,
+    }
+    ```
+
+- **Functions**: 
+
+    | Function Signature | Functionality | Principle in Halo2 |
+    | --- | --- | --- |
+    | `pub(crate) fn enable_selector<A, AR>(&mut self, annotation: A, selector: &Selector, offset: usize) -> Result<(), Error>` | Enables a selector at a specific row offset in the region, activating certain constraints for that row. | In Halo2, selectors are used to enable or disable certain gates or constraints within a circuit. By enabling a selector at a specific offset, the circuit can control which parts of the computation are active at different rows. This is crucial for constructing efficient and flexible circuits. |
+    | `pub fn assign_advice<'v, V, VR, A, AR>(&'v mut self, annotation: A, column: Column<Advice>, offset: usize, mut to: V) -> Result<AssignedCell<VR, F>, Error>` | Assigns a value to an advice column at a specific offset, returning an AssignedCell with the value and cell location. | Advice columns in Halo2 are used to store witness values, which are private inputs to the circuit. This function allows the circuit to assign a value to an advice column at a specific location. The `to` function is used to compute the value, and it is guaranteed to be called at most once. The result is an `AssignedCell` containing the assigned value and the cell's location. |
+    | `pub fn assign_advice_from_constant<VR, A, AR>(&mut self, annotation: A, column: Column<Advice>, offset: usize, constant: VR) -> Result<AssignedCell<VR, F>, Error>` | Assigns a constant value to the advice column at the given offset within the region. | Constant values in Halo2 are assigned to fixed columns and then equality-constrained to advice columns. This function simplifies the process of assigning a constant value to an advice column. The constant value is first assigned to a fixed column configured via `ConstraintSystem::enable_constant`, and then the advice column is constrained to have the same value. |
+    | `pub fn assign_advice_from_instance<A, AR>(&mut self, annotation: A, instance: Column<Instance>, row: usize, advice: Column<Advice>, offset: usize) -> Result<AssignedCell<F, F>, Error>` | Assigns the value of an instance column's cell at an absolute location to an advice column at the given offset within the region. | Instance columns in Halo2 are used to store public inputs to the circuit. This function allows the circuit to copy a public input value from an instance column to an advice column. The result is an `AssignedCell` containing the copied value and the cell's location. |
+    | `pub fn instance_value(&mut self, instance: Column<Instance>, row: usize) -> Result<Value<F>, Error>` | Returns the value of the instance column's cell at the absolute location `row`. | This function provides a convenient way to access the value of an instance column's cell. However, it does not create any constraints. To use the instance value in the circuit, callers still need to use `assign_advice_from_instance` to copy the value to an advice column and create the necessary constraints. |
+    | `pub fn assign_fixed<'v, V, VR, A, AR>(&'v mut self, annotation: A, column: Column<Fixed>, offset: usize, mut to: V) -> Result<AssignedCell<VR, F>, Error>` | Assigns a value to a fixed column at a specific offset within the region. | Fixed columns in Halo2 are used to store values that are the same for all instances of the circuit. This function allows the circuit to assign a value to a fixed column at a specific location. The `to` function is used to compute the value, and it is guaranteed to be called at most once. The result is an `AssignedCell` containing the assigned value and the cell's location. |
+    | `pub fn constrain_constant<VR>(&mut self, cell: Cell, constant: VR) -> Result<(), Error>` | Constrains a cell to have a constant value. | In Halo2, constraints are used to enforce relationships between cells. This function adds a constraint to ensure that a given cell has a specific constant value. If the cell is in a column where equality has not been enabled, an error will be returned. |
+    | `pub fn constrain_equal(&mut self, left: Cell, right: Cell) -> Result<(), Error>` | Constrains two cells to have the same value. | This function adds a constraint to ensure that two given cells have the same value. If either of the cells is in a column where equality has not been enabled, an error will be returned. Constraining cells to be equal is a fundamental operation in constructing circuits in Halo2. |
+
 #### 11. Cell and AssignedCell
 ```mermaid
 classDiagram
