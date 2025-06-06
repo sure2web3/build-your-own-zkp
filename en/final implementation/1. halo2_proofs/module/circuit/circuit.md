@@ -1295,11 +1295,174 @@ classDiagram
     | `pub fn evaluate(self) -> AssignedCell<F, F>` | Evaluates this assigned cell's value directly, performing an unbatched inversion if necessary. If the denominator is zero, the returned cell's value is zero. | In some cryptographic protocols, values may be represented as fractions to enable batch inversion for efficiency. However, in certain cases, an unbatched inversion may be required. This function evaluates the cell's value, performing the necessary inversion if the value is represented as a fraction. If the denominator is zero, it ensures that the resulting value is zero, which is a common convention in field arithmetic. This evaluation step is important for obtaining the final value that can be used in subsequent operations in the circuit. |
     | `pub fn copy_advice<A, AR>(&self, annotation: A, region: &mut Region<'_, F>, column: Column<Advice>, offset: usize) -> Result<Self, Error> where A: Fn() -> AR, AR: Into<String>, V: Clone, for<'v> Assigned<F>: From<&'v V>` | Copies the value to a given advice cell and constrains them to be equal. Returns an error if either this cell or the given cell are in columns where equality has not been enabled. | In Halo2, advice columns are used to store witness values that are not publicly known. This function allows users to copy the value of an existing `AssignedCell` to a new advice cell. It also enforces an equality constraint between the two cells, ensuring that they have the same value. This is useful for creating redundant copies of values or for propagating values between different parts of the circuit. The annotation is used to provide a descriptive name for the operation, which can be helpful for debugging and auditing the circuit. |
 
-#### Table
+#### TableLayouter and Table
+In Halo2, `lookup tables` are used to efficiently enforce that certain values in the circuit belong to a predefined set (the table). This is crucial for range checks, bit decompositions, and other constraints that require membership in a set. The `TableLayouter` trait abstracts the logic for assigning values to these tables, while the `Table` struct provides a user-friendly API for chips to interact with lookup tables during circuit synthesis.
+```mermaid
+classDiagram
+    class TableLayouter~F~ {
+        + assign_cell(annotation, column, offset, to) Result<（）, Error>
+    }
 
-#### NamespacedLayouter
+    class Table~F~ {
+        - &'r mut dyn TableLayouter~F~ table
+        + assign_cell(annotation, column, offset, to) Result<（）, Error>
+    }
 
-#### Layouter
+    TableLayouter <|.. Table : implements
+    Table --> TableLayouter : uses
+
+    class Value~VR~ {
+        - ...
+    }
+
+    class Assigned~F~ {
+        - ...
+    }
+
+    class TableColumn {
+        - ...
+    }
+
+    class Error {
+        - ...
+    }
+
+    Table --> Value : uses
+    Table --> Assigned : uses
+    Table --> TableColumn : uses
+    Table --> Error : returns
+    TableLayouter --> Value : uses
+    TableLayouter --> Assigned : uses
+    TableLayouter --> TableColumn : uses
+    TableLayouter --> Error : returns
+```
+
+- **TableLayouter**: The `TableLayouter<F>` is a helper trait designed for implementing a custom `Layouter`. It is specifically used for implementing table assignments. This trait provides a single method `assign_cell` that allows assigning a fixed value to a table cell. If the table cell has already been assigned, an error will be returned.
+    * Defines the interface for assigning values to `lookup table` cells in the circuit.
+    ```rust
+    /// Helper trait for implementing a custom [`Layouter`].
+    ///
+    /// This trait is used for implementing table assignments.
+    ///
+    /// [`Layouter`]: super::Layouter
+    pub trait TableLayouter<F: Field>: std::fmt::Debug {
+        /// Assigns a fixed value to a table cell.
+        ///
+        /// Returns an error if the table cell has already been assigned to.
+        fn assign_cell<'v>(
+            &'v mut self,
+            annotation: &'v (dyn Fn() -> String + 'v),
+            column: TableColumn,
+            offset: usize,
+            to: &'v mut (dyn FnMut() -> Value<Assigned<F>> + 'v),
+        ) -> Result<(), Error>;
+    }
+    ```
+
+- **Table**: The `Table<F>` represents a lookup table in the circuit. It holds a mutable reference to a `TableLayouter<F>`. The `Table<F>` provides a method `assign_cell` that delegates the assignment operation to the underlying `TableLayouter<F>`. It also ensures that the value returned by the `to` function is converted to the appropriate field type.
+    * Provides a high-level, ergonomic API for chips to assign values to `lookup tables`.
+    ```rust
+    /// A lookup table in the circuit.
+    #[derive(Debug)]
+    pub struct Table<'r, F: Field> {
+        table: &'r mut dyn TableLayouter<F>,
+    }
+    ```
+
+- **Functions**:
+    | Function Signature | Functionality | Principle in Halo2 |
+    | --- | --- | --- |
+    | in `TableLayouter<F>`<br><br> `fn assign_cell<'v>(&'v mut self, annotation: &'v (dyn Fn() -> String + 'v), column: TableColumn, offset: usize, to: &'v mut (dyn FnMut() -> Value<Assigned<F>> + 'v)) -> Result<(), Error>` | Assigns a fixed value to a table cell. Returns an error if the table cell has already been assigned to. | In Halo2, tables are used to perform lookup operations. The `assign_cell` method is used to populate the table with fixed values. Each cell in the table can only be assigned once to ensure the integrity of the table data. |
+    | in `Table<F>`<br><br> `pub fn assign_cell<'v, V, VR, A, AR>(&'v mut self, annotation: A, column: TableColumn, offset: usize, mut to: V) -> Result<(), Error>` | Assigns a fixed value to a table cell. Returns an error if the table cell has already been assigned to. The `to` function is guaranteed to be called at most once. | This method in `Table<F>` is a wrapper around the `assign_cell` method in `TableLayouter<F>`. It takes a more flexible closure `to` that returns a `Value<VR>`, and converts it to a `Value<Assigned<F>>` before passing it to the underlying `TableLayouter<F>`. This allows for more convenient value assignment in the context of the table. |
+
+#### Layouter and NamespacedLayouter
+```mermaid
+classDiagram
+    class Layouter~F~ {
+        + type Root: Layouter~F~
+        + assign_region(name, assignment) Result~AR, Error~
+        + assign_table(name, assignment) Result~（）, Error~
+        + constrain_instance(cell, column, row) Result~（）, Error~
+        + get_root() &mut Self::Root
+        + push_namespace(name_fn)
+        + pop_namespace(gadget_name)
+        + namespace(name_fn) NamespacedLayouter< '_, F, Self::Root>
+    }
+
+    class NamespacedLayouter~'a, F, L~ {
+        - &'a mut L layouter
+        - PhantomData~F~
+        + type Root = L::Root
+        + assign_region(name, assignment) Result~AR, Error~
+        + assign_table(name, assignment) Result~（）, Error~
+        + constrain_instance(cell, column, row) Result~（）, Error~
+        + get_root() &mut Self::Root
+        + push_namespace(name_fn) panic
+        + pop_namespace(gadget_name) panic
+        + drop()
+    }
+
+    Layouter <|-- NamespacedLayouter : implements
+    NamespacedLayouter --> Layouter : borrows
+
+    class Region~F~ {
+        - ...
+    }
+
+    class Table~F~ {
+        - ...
+    }
+
+    class Cell {
+        - region_index: RegionIndex
+        - row_offset: usize
+        - column: Column<Any>
+    }
+
+    class Column~Instance~ {
+        - ...
+    }
+
+    class Error {
+        - ...
+    }
+
+    Layouter --> Region : uses
+    Layouter --> Table : uses
+    Layouter --> Cell : uses
+    Layouter --> Column~Instance~ : uses
+    Layouter --> Error : returns
+    NamespacedLayouter --> Region : uses
+    NamespacedLayouter --> Table : uses
+    NamespacedLayouter --> Cell : uses
+    NamespacedLayouter --> Column~Instance~ : uses
+    NamespacedLayouter --> Error : returns
+```
+
+- **Layouter**: The `Layouter<F>` is a central abstraction that manages how circuit regions and lookup tables are assigned and organized. It is responsible for handling row indices, managing namespaces (for modular circuit design), and ensuring that assignments and constraints are applied correctly and efficiently. The layouter is chip-agnostic, meaning it can be used with any chip implementation, and it provides the flexibility to optimize circuit layout and assignment strategies. It provides methods for assigning regions and tables, constraining instances, managing namespaces, and getting the root of the assignment.
+    * The Layouter trait defines the interface for assigning regions and tables, constraining instance values, and managing namespaces within a Halo2 circuit.
+    * It abstracts over the details of row management and circuit assignment, allowing chips to focus on logic rather than layout.
+
+- **NamespacedLayouter**: The `NamespacedLayouter<'a, F, L>` is a wrapper around a `Layouter<F>` that manages namespaces. It borrows a `Layouter` and pushes a namespace context when created. When dropped, it pops out of the namespace context. It implements the `Layouter<F>` trait, delegating most of the operations to the underlying `Layouter`, but it panics if `push_namespace` or `pop_namespace` is called directly, as these operations should be handled by the root `Layouter`.
+    * NamespacedLayouter wraps a mutable reference to a layouter and manages entering and exiting a namespace context. When dropped, it automatically pops the namespace, ensuring correct scoping.
+
+- **Functions**: 
+    | Function Signature | Class | Functionality | Principle in Halo2 |
+    | --- | --- | --- | --- |
+    | `fn assign_region<A, AR, N, NR>(&mut self, name: N, assignment: A) -> Result<AR, Error>` | `Layouter<F>` | Assigns a region of gates to an absolute row number.<br><br> Inside the closure, the chip may freely use relative offsets; the `Layouter` will treat these assignments as a single "region" within the circuit. Outside this closure, the `Layouter` is allowed to optimise as it sees fit. | In Halo2, regions are used to organize the circuit layout. The `Layouter` determines the absolute position of the region and assigns cells within it. This method allows the circuit designer to define the operations within a region. |
+    | `fn assign_table<A, N, NR>(&mut self, name: N, assignment: A) -> Result<(), Error>` | `Layouter<F>` | Assigns a table region to an absolute row number. | Tables in Halo2 are used for lookup operations. This method allows the circuit designer to assign values to table cells and determine the position of the table in the circuit. |
+    | `fn constrain_instance(&mut self, cell: Cell, column: Column<Instance>, row: usize) -> Result<(), Error>` | `Layouter<F>` | Constrains a `Cell` to equal an instance column's row value at an absolute position. | Instance columns in Halo2 hold public inputs. This method ensures that a cell in the circuit has the same value as a specific row in an instance column, enforcing the relationship between public inputs and the circuit. |
+    | `fn get_root(&mut self) -> &mut Self::Root` | `Layouter<F>` | Gets the "root" of this assignment, bypassing the namespacing.<br><br> In this context, "bypassing the namespacing" means accessing the original, top-level layouter directly, without considering any nested namespace layers that may have been created for modularity or organization.<br><br> When you call get_root, you get a reference to the root layouter, ignoring any intermediate or current namespace contexts. This is useful for internal management but is not intended for regular use in circuit code, since you usually want to respect the current namespace structure for clarity and correctness. | This method is used to access the root `Layouter` directly, which is useful for operations that need to be performed at the top level of the assignment hierarchy. |
+    | `fn push_namespace<NR, N>(&mut self, name_fn: N)` | `Layouter<F>` | Creates a new (sub)namespace and enters into it. | Namespaces in Halo2 are used to organize the circuit layout and group related operations. This method allows the circuit designer to create a new namespace and start a new scope of operations. |
+    | `fn pop_namespace(&mut self, gadget_name: Option<String>)` | `Layouter<F>` | Exits out of the existing namespace. | This method is used to end the current namespace scope and return to the previous one. It can optionally record the name of a gadget associated with the namespace. |
+    | `fn namespace<NR, N>(&mut self, name_fn: N) -> NamespacedLayouter<'_, F, Self::Root>` | `Layouter<F>` | Enters into a namespace and returns a `NamespacedLayouter`. | This is a convenience method that creates a new `NamespacedLayouter` and enters a new namespace. It simplifies the process of working with namespaces in the circuit. |
+    | `fn assign_region<A, AR, N, NR>(&mut self, name: N, assignment: A) -> Result<AR, Error>` | `NamespacedLayouter<'a, F, L>` | Delegates the region assignment to the underlying `Layouter`. | The `NamespacedLayouter` simply passes the region assignment operation to the `Layouter` it borrows, maintaining the same behavior as the root `Layouter`. |
+    | `fn assign_table<A, N, NR>(&mut self, name: N, assignment: A) -> Result<(), Error>` | `NamespacedLayouter<'a, F, L>` | Delegates the table assignment to the underlying `Layouter`. | Similar to `assign_region`, this method passes the table assignment operation to the underlying `Layouter`. |
+    | `fn constrain_instance(&mut self, cell: Cell, column: Column<Instance>, row: usize) -> Result<(), Error>` | `NamespacedLayouter<'a, F, L>` | Delegates the instance constraint to the underlying `Layouter`. | This method ensures that the instance constraint operation is handled by the root `Layouter`. |
+    | `fn get_root(&mut self) -> &mut Self::Root` | `NamespacedLayouter<'a, F, L>` | Delegates the root retrieval to the underlying `Layouter`. | It allows access to the root `Layouter` through the `NamespacedLayouter`. |
+    | `fn push_namespace<NR, N>(&mut self, _name_fn: N)` | `NamespacedLayouter<'a, F, L>` | Panics if called, as only the root's `push_namespace` should be called. | This is to ensure that namespace creation is properly managed at the root level. |
+    | `fn pop_namespace(&mut self, _gadget_name: Option<String>)` | `NamespacedLayouter<'a, F, L>` | Panics if called, as only the root's `pop_namespace` should be called. | This enforces the correct namespace management by preventing direct calls to `pop_namespace` on the `NamespacedLayouter`. |
+    | `fn drop(&mut self)` | `NamespacedLayouter<'a, F, L>` | Pops out of the namespace context when the `NamespacedLayouter` is dropped. | This ensures that the namespace is properly exited when the `NamespacedLayouter` goes out of scope. |
 
 #### 10. Chip
 - **Chip Trait**: The `Chip` trait represents a set of instructions used by gadgets in the circuit. It stores configuration and loaded state information required during circuit synthesis. The `Config` type holds the configuration for the chip, which can be derived during the `Circuit::configure` phase. The `Loaded` type holds any general chip state that needs to be loaded at the start of `Circuit::synthesize`.
