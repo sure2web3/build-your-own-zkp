@@ -92,9 +92,9 @@ Given $d + 1$ points $(x_0, y_0), (x_1, y_1), \ldots, (x_d, y_d)$ where all $x_i
 **Example**:  
 Find $P(x)$ of degree 1 (a line) passing through $(1, 3)$ and $(2, 5)$ in $\mathbb{Z}_7$:  
 Using Lagrange interpolation:  
-$
+$$
 P(x) = y_0 \cdot \frac{x - x_1}{x_0 - x_1} + y_1 \cdot \frac{x - x_0}{x_1 - x_0}
-$  
+$$  
 Substituting $x_0 = 1$, $y_0 = 3$, $x_1 = 2$, $y_1 = 5$: 
 
 $$

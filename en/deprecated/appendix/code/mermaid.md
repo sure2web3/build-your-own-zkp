@@ -53,6 +53,56 @@ graph LR
     N
     end
 ```
+# macro
+```mermaid
+---
+config:
+  layout: fixed
+---
+flowchart TD
+    A["impl_add_binop_specify_output"] -- impl --> B["Add Trait"]
+    C["impl_sub_binop_specify_output"] -- impl --> D["Sub Trait"]
+    E["impl_binops_additive_specify_output"] -- calls --> A & C
+    F["impl_binops_multiplicative_mixed"] -- impl --> G["Mul Trait"]
+    H["impl_binops_additive"] -- calls --> E
+    H -- impl --> I["AddAssign Trait"] & J["SubAssign Trait"]
+    K["impl_binops_multiplicative"] -- calls --> F
+    K -- impl --> L["MulAssign Trait"]
+    A -. Params: $lhs, $rhs, $output .-> A
+    C -. Params: $lhs, $rhs, $output .-> C
+    F -. Params: $lhs, $rhs, $output .-> F
+    E -. Params: $lhs, $rhs, $output .-> E
+    H -. Params: $lhs, $rhs .-> H
+    K -. Params: $lhs, $rhs .-> K
+    B -- &self + rhs, self + &rhs, self + rhs --- M1["Add Methods"]
+    D -- "&self - rhs, self - &rhs, self - rhs" --- M2["Sub Methods"]
+    G -- &self * rhs, self * &rhs, self * rhs --- M3["Mul Methods"]
+    I -- add_assign --- M4["AddAssign Method"]
+    J -- sub_assign --- M5["SubAssign Method"]
+    L -- mul_assign --- M6["MulAssign Method"]
+     A:::macro
+     B:::trait
+     C:::macro
+     D:::trait
+     E:::macro
+     F:::macro
+     G:::trait
+     H:::macro
+     I:::trait
+     J:::trait
+     K:::macro
+     L:::trait
+     M1:::method
+     M2:::method
+     M3:::method
+     M4:::method
+     M5:::method
+     M6:::method
+    classDef macro fill:#E5F6FF,stroke:#73A6FF,stroke-width:2px
+    classDef trait fill:#FFF6CC,stroke:#FFBC52,stroke-width:2px
+    classDef method fill:#fff,stroke:#bbb,stroke-dasharray: 5 5
+
+```
 
 # arithmetic-curve
 ```mermaid

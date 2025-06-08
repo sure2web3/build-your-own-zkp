@@ -538,7 +538,7 @@ classDiagram
     | `mul(rhs)` | Implements the multiplication operator for expressions.<br><br> Panics if both sides contain a simple selector. Otherwise, returns Expression::Product(Box::new(self), Box::new(rhs)). | Creates a new expression representing the product of two polynomials, preventing the multiplication of two expressions containing simple selectors. |
     | `mul(rhs: F)` | Implements scalar multiplication for expressions.<br><br> Implements the Mul trait for multiplying an expression by a constant of type F. Returns Expression::Scaled(Box::new(self), rhs). | Scales the polynomial by a constant field element, simplifying coefficient adjustments in constraints. |    
 
-#### 7. VirtualCell and VirtualCells
+#### 8. VirtualCell and VirtualCells
 ```mermaid
 classDiagram
     class VirtualCell {
@@ -626,7 +626,7 @@ classDiagram
     | Integration with `ConstraintSystem` | `VirtualCells` interacts with `ConstraintSystem` to manage column indices and track dependencies, ensuring efficient constraint enforcement during proof generation. |
 
 
-#### 7. Gate and PinnedGates
+#### 9. Gate and PinnedGates
 ```mermaid
 classDiagram
     class Gate~F: Field~ {
@@ -708,7 +708,7 @@ classDiagram
     | `Gate::queried_cells()` | Returns the cells (columns and rotations) involved in the gate's constraints. | Helps in understanding which parts of the circuit are affected by the gate's constraints. |
     | `PinnedGates::fmt()` | Formats the gate polynomials for debugging purposes. | Used by developers to inspect the polynomial expressions during circuit development and testing. |
 
-#### 7. Constraint and Constraints
+#### 10. Constraint and Constraints
 ```mermaid
 classDiagram
     class Constraint~F~ {
@@ -819,7 +819,7 @@ classDiagram
     });
     ```
 
-#### 8. ConstraintSystem and PinnedConstraintSystem
+#### 11. ConstraintSystem and PinnedConstraintSystem
 ```mermaid
 classDiagram
     class ConstraintSystem {
@@ -1040,7 +1040,7 @@ classDiagram
     | `blinding_factors()` | Computes the number of blinding factors necessary to perfectly blind the prover's witness polynomials. | Blinding factors are random values added to the witness polynomials to ensure zero-knowledge.<br><br>Blinding factors are used to protect the privacy of the prover's witness values during the proof generation process. |
     | `minimum_rows()` | Returns the minimum number of rows needed to account for blinding factors and other requirements. | This value is used to ensure that the circuit has enough rows to accommodate all the necessary computations and constraints.<br><br> The minimum number of rows ensures there is enough space in the circuit for all blinding factors, special polynomial roles, and at least one usable row for computation. This is critical for the soundness and security of the proof system. |
 
-#### 9. Circuit
+#### 12. Circuit
 - **Circuit Trait**: This is a trait that circuits provide implementations for so that the backend prover can ask the circuit to synthesize using some given [`ConstraintSystem`] implementation.
     ```rust
     pub trait Circuit<F: Field> {
@@ -1078,11 +1078,113 @@ systems.
 - Error
 - Layouter
 - Region
-- Value
 - Rotation
 - compress_selectors
 
-#### RegionIndex and RegionStart
+#### 13. Value
+```mermaid
+classDiagram
+    class Value~V~ {
+        - inner: Option~V~
+        + default() Self
+        + unknown() Self
+        + known(value: V) Self
+        + assign() Result~V, Error~
+        + as_ref() Value~&V~
+        + as_mut() Value~&mut V~
+        + into_option() Option~V~
+        + assert_if_known~F: FnOnce(&V) -> bool~(f: F)
+        + error_if_known_and~F: FnOnce(&V) -> bool~(f: F) Result~（）, Error~
+        + map~W, F: FnOnce(V) -> W~(f: F) Value~W~
+        + and_then~W, F: FnOnce(V) -> Value< W>~(f: F) Value~W~
+        + zip~W~(other: Value~W~) Value<（V, W）>
+        + unzip() (Value~V~, Value~W~)
+        + copied() Value~V~
+        + cloned() Value~V~
+        + transpose_array() [Value~V~; LEN]
+        + transpose_vec(length: usize) Vec~Value< V>~
+        + to_field~F: Field~() Value~Assigned< F>~
+        + into_field~F: Field~() Value~Assigned< F>~
+        + double~F: Field~() Value~Assigned< F>~
+        + square~F: Field~() Value~Assigned< F>~
+        + cube~F: Field~() Value~Assigned< F>~
+        + invert~F: Field~() Value~Assigned< F>~
+    }
+
+    class Assigned~F~ {
+        - ...
+    }
+
+    class Error {
+        - ...
+    }
+
+    Value <--|> Assigned : can convert to
+    Value --> Error : returns
+    Value "1" *-- "1" Option : contains
+
+    %% Arithmetic operations
+    Value --|> Neg : implements
+    Value --|> Add : implements
+    Value --|> Sub : implements
+    Value --|> Mul : implements
+```
+
+- **Value**: The `Value` struct is a core abstraction for representing values that may or may not be known during Halo2 circuit synthesis. It wraps an Option<V>, but intentionally hides the enum interface to prevent accidental unwrapping and to ensure that unknown (unwitnessed) values propagate safely throughout the circuit logic. `Value` supports arithmetic operations (like addition, subtraction, multiplication, and negation) and functional transformations, always propagating the "unknown" state if any operand is unknown. This design is crucial for zero-knowledge circuits, where some values may not be available at synthesis time, and ensures that circuit constraints and assignments remain sound and secure. The struct also provides utility methods for mapping, zipping, and converting values, making it ergonomic and safe to use in complex circuit construction.
+
+    ```rust
+    /// A value that might exist within a circuit.
+    ///
+    /// This behaves like `Option<V>` but differs in two key ways:
+    /// - It does not expose the enum cases, or provide an `Option::unwrap` equivalent. This
+    ///   helps to ensure that unwitnessed values correctly propagate.
+    /// - It provides pass-through implementations of common traits such as `Add` and `Mul`,
+    ///   for improved usability.
+    #[derive(Clone, Copy, Debug)]
+    pub struct Value<V> {
+        inner: Option<V>,
+    }
+    ```
+
+- **Functions**:
+    | Function Signature | Class | Functionality | Principle in Halo2 |
+    | --- | --- | --- | --- |
+    | `fn default() -> Self` | `Value<V>` | Returns an unwitnessed value by default. | In Halo2, it's often necessary to initialize values in a circuit. This method provides a default initialization with an unwitnessed value. |
+    | `fn unknown() -> Self` | `Value<V>` | Constructs an unwitnessed value. | Represents a value that is not yet known in the circuit, which is important for handling cases where the witness is not available. |
+    | `fn known(value: V) -> Self` | `Value<V>` | Constructs a known value. | Allows the circuit to represent values that are already known, which can be used in subsequent operations. |
+    | `fn assign(self) -> Result<V, Error>` | `Value<V>` | Obtains the inner value for assigning into the circuit. Returns `Error::Synthesis` if the value is unknown. | Ensures that only known values can be assigned to cells in the circuit, preventing synthesis errors. |
+    | `fn as_ref(&self) -> Value<&V>` | `Value<V>` | Converts from `&Value<V>` to `Value<&V>`. | Facilitates borrowing the inner value without taking ownership. |
+    | `fn as_mut(&mut self) -> Value<&mut V>` | `Value<V>` | Converts from `&mut Value<V>` to `Value<&mut V>`. | Allows mutable borrowing of the inner value. |
+    | `fn into_option(self) -> Option<V>` | `Value<V>` | Converts the `Value<V>` to an `Option<V>`. | For internal crate usage, provides a way to access the inner `Option` type. |
+    | `fn assert_if_known<F: FnOnce(&V) -> bool>(f: F) -> ()` | `Value<V>` | Enforces an assertion on the contained value if it is known. Ignores the assertion if the value is unknown. | Helps to verify the integrity of known values in the circuit without affecting unknown values. |
+    | `fn error_if_known_and<F: FnOnce(&V) -> bool>(f: F) -> Result<(), Error>` | `Value<V>` | Checks the contained value for an error condition if it is known. Ignores the check if the value is unknown. | Allows for error checking on known values in the circuit. |
+    | `fn map<W, F: FnOnce(V) -> W>(f: F) -> Value<W>` | `Value<V>` | Maps a `Value<V>` to `Value<W>` by applying a function to the contained value. | Enables transformation of the inner value while maintaining the `Value` wrapper. |
+    | `fn and_then<W, F: FnOnce(V) -> Value<W>>(f: F) -> Value<W>` | `Value<V>` | Returns `Value::unknown()` if the value is unknown, otherwise calls `f` with the wrapped value and returns the result. | Allows for conditional processing of the inner value. |
+    | `fn zip<W>(other: Value<W>) -> Value<(V, W)>` | `Value<V>` | Zips `self` with another `Value`. Returns `Value::unknown()` if either value is unknown. | Combines two `Value` instances into a single `Value` containing a tuple. |
+    | `fn unzip(self) -> (Value<V>, Value<W>)` | `Value<(V, W)>` | Unzips a value containing a tuple of two values. Returns `(Value::unknown(), Value::unknown())` if the value is unknown. | Separates a `Value` containing a tuple into two individual `Value` instances. |
+    | `fn copied(self) -> Value<V>` | `Value<&V>` | Maps a `Value<&V>` to a `Value<V>` by copying the contents of the value. | Allows for creating a new `Value` by copying the inner value. |
+    | `fn cloned(self) -> Value<V>` | `Value<&V>` | Maps a `Value<&V>` to a `Value<V>` by cloning the contents of the value. | Enables creating a new `Value` by cloning the inner value. |
+    | `fn transpose_array(self) -> [Value<V>; LEN]` | `Value<[V; LEN]>` | Transposes a `Value<[V; LEN]>` into a `[Value<V>; LEN]`. Maps `Value::unknown()` to `[Value::unknown(); LEN]`. | Converts an array inside a `Value` to an array of `Value` instances. |
+    | `fn transpose_vec(self, length: usize) -> Vec<Value<V>>` | `Value<I>` | Transposes a `Value<impl IntoIterator<Item = V>>` into a `Vec<Value<V>>`. Maps `Value::unknown()` to `vec![Value::unknown(); length]`. | Converts an iterable inside a `Value` to a vector of `Value` instances. |
+    | `fn to_field<F: Field>(&self) -> Value<Assigned<F>>` | `Value<V>` | Returns the field element corresponding to this value. | Converts the inner value to a field element represented by `Assigned<F>`. |
+    | `fn into_field<F: Field>(self) -> Value<Assigned<F>>` | `Value<V>` | Returns the field element corresponding to this value. | Similar to `to_field`, but consumes the `Value` instance. |
+    | `fn double<F: Field>(&self) -> Value<Assigned<F>>` | `Value<V>` | Doubles this field element. | Performs the doubling operation on the inner field element and returns a new `Value` with the result. |
+    | `fn square<F: Field>(&self) -> Value<Assigned<F>>` | `Value<V>` | Squares this field element. | Squares the inner field element and returns a new `Value` with the result. |
+    | `fn cube<F: Field>(&self) -> Value<Assigned<F>>` | `Value<V>` | Cubes this field element. | Cubes the inner field element and returns a new `Value` with the result. |
+    | `fn invert<F: Field>(&self) -> Value<Assigned<F>>` | `Value<V>` | Inverts this assigned value (taking the inverse of zero to be zero). | Inverts the inner field element and returns a new `Value` with the result. |
+    | `fn evaluate(self) -> Value<F>` | `Value<Assigned<F>>` | Evaluates this value directly, performing an unbatched inversion if necessary. Returns zero if the denominator is zero. | Computes the actual value of the `Assigned<F>` and returns it as a `Value<F>`. |
+    | `fn neg(self) -> Self::Output` | `Value<V>` | Implements the negation operation for `Value<V>`. | Applies the negation operation to the inner value if it is known. |
+    | `fn add(self, rhs: Self) -> Self::Output` | `Value<V>` | Implements the addition operation for `Value<V>`. | Adds two `Value` instances if both inner values are known. |
+    | `fn sub(self, rhs: Self) -> Self::Output` | `Value<V>` | Implements the subtraction operation for `Value<V>`. | Subtracts two `Value` instances if both inner values are known. |
+    | `fn mul(self, rhs: Self) -> Self::Output` | `Value<V>` | Implements the multiplication operation for `Value<V>`. | Multiplies two `Value` instances if both inner values are known. |
+    | `fn add(self, rhs: Value<F>) -> Self::Output` | `Value<Assigned<F>>` | Implements the addition operation between `Value<Assigned<F>>` and `Value<F>`. | Adds a `Value<Assigned<F>>` and a `Value<F>` if both inner values are known. |
+    | `fn add(self, rhs: F) -> Self::Output` | `Value<Assigned<F>>` | Implements the addition operation between `Value<Assigned<F>>` and a field element `F`. | Adds a `Value<Assigned<F>>` and a field element if the inner value of `Value<Assigned<F>>` is known. |
+    | `fn sub(self, rhs: Value<F>) -> Self::Output` | `Value<Assigned<F>>` | Implements the subtraction operation between `Value<Assigned<F>>` and `Value<F>`. | Subtracts a `Value<F>` from a `Value<Assigned<F>>` if both inner values are known. |
+    | `fn sub(self, rhs: F) -> Self::Output` | `Value<Assigned<F>>` | Implements the subtraction operation between `Value<Assigned<F>>` and a field element `F`. | Subtracts a field element from a `Value<Assigned<F>>` if the inner value of `Value<Assigned<F>>` is known. |
+    | `fn mul(self, rhs: Value<F>) -> Self::Output` | `Value<Assigned<F>>` | Implements the multiplication operation between `Value<Assigned<F>>` and `Value<F>`. | Multiplies a `Value<Assigned<F>>` and a `Value<F>` if both inner values are known. |
+    | `fn mul(self, rhs: F) -> Self::Output` | `Value<Assigned<F>>` | Implements the multiplication operation between `Value<Assigned<F>>` and a field element `F`. | Multiplies a `Value<Assigned<F>>` and a field element if the inner value of `Value<Assigned<F>>` is known. |
+
+#### 14. RegionIndex and RegionStart
 The `RegionIndex` and `RegionStart` play important roles in this process:
 - **`RegionIndex`**: It helps in identifying and referring to different regions. This is useful when multiple regions are defined in a circuit, and the layouter needs to manage them efficiently. For example, during the measurement and assignment phases of the circuit synthesis, the layouter may need to access and manipulate specific regions based on their indices.
 - **`RegionStart`**: It determines the starting position of a region within the circuit layout. This is essential for ensuring that different regions do not overlap and that the overall circuit is well - organized. The starting row information is used when assigning cells and constraints within a region.
@@ -1149,9 +1251,9 @@ classDiagram
     }
     ```
 
-#### RegionLayouter
+#### 15. RegionLayouter
 
-#### Region
+#### 16. Region
 
 ```mermaid
 classDiagram
@@ -1236,7 +1338,7 @@ classDiagram
     | `pub fn constrain_constant<VR>(&mut self, cell: Cell, constant: VR) -> Result<(), Error>` | Constrains a cell to have a constant value. | In Halo2, constraints are used to enforce relationships between cells. This function adds a constraint to ensure that a given cell has a specific constant value. If the cell is in a column where equality has not been enabled, an error will be returned. |
     | `pub fn constrain_equal(&mut self, left: Cell, right: Cell) -> Result<(), Error>` | Constrains two cells to have the same value. | This function adds a constraint to ensure that two given cells have the same value. If either of the cells is in a column where equality has not been enabled, an error will be returned. Constraining cells to be equal is a fundamental operation in constructing circuits in Halo2. |
 
-#### 11. Cell and AssignedCell
+#### 17. Cell and AssignedCell
 ```mermaid
 classDiagram
     class Cell {
@@ -1295,7 +1397,7 @@ classDiagram
     | `pub fn evaluate(self) -> AssignedCell<F, F>` | Evaluates this assigned cell's value directly, performing an unbatched inversion if necessary. If the denominator is zero, the returned cell's value is zero. | In some cryptographic protocols, values may be represented as fractions to enable batch inversion for efficiency. However, in certain cases, an unbatched inversion may be required. This function evaluates the cell's value, performing the necessary inversion if the value is represented as a fraction. If the denominator is zero, it ensures that the resulting value is zero, which is a common convention in field arithmetic. This evaluation step is important for obtaining the final value that can be used in subsequent operations in the circuit. |
     | `pub fn copy_advice<A, AR>(&self, annotation: A, region: &mut Region<'_, F>, column: Column<Advice>, offset: usize) -> Result<Self, Error> where A: Fn() -> AR, AR: Into<String>, V: Clone, for<'v> Assigned<F>: From<&'v V>` | Copies the value to a given advice cell and constrains them to be equal. Returns an error if either this cell or the given cell are in columns where equality has not been enabled. | In Halo2, advice columns are used to store witness values that are not publicly known. This function allows users to copy the value of an existing `AssignedCell` to a new advice cell. It also enforces an equality constraint between the two cells, ensuring that they have the same value. This is useful for creating redundant copies of values or for propagating values between different parts of the circuit. The annotation is used to provide a descriptive name for the operation, which can be helpful for debugging and auditing the circuit. |
 
-#### TableLayouter and Table
+#### 18. TableLayouter and Table
 In Halo2, `lookup tables` are used to efficiently enforce that certain values in the circuit belong to a predefined set (the table). This is crucial for range checks, bit decompositions, and other constraints that require membership in a set. The `TableLayouter` trait abstracts the logic for assigning values to these tables, while the `Table` struct provides a user-friendly API for chips to interact with lookup tables during circuit synthesis.
 ```mermaid
 classDiagram
@@ -1375,7 +1477,7 @@ classDiagram
     | in `TableLayouter<F>`<br><br> `fn assign_cell<'v>(&'v mut self, annotation: &'v (dyn Fn() -> String + 'v), column: TableColumn, offset: usize, to: &'v mut (dyn FnMut() -> Value<Assigned<F>> + 'v)) -> Result<(), Error>` | Assigns a fixed value to a table cell. Returns an error if the table cell has already been assigned to. | In Halo2, tables are used to perform lookup operations. The `assign_cell` method is used to populate the table with fixed values. Each cell in the table can only be assigned once to ensure the integrity of the table data. |
     | in `Table<F>`<br><br> `pub fn assign_cell<'v, V, VR, A, AR>(&'v mut self, annotation: A, column: TableColumn, offset: usize, mut to: V) -> Result<(), Error>` | Assigns a fixed value to a table cell. Returns an error if the table cell has already been assigned to. The `to` function is guaranteed to be called at most once. | This method in `Table<F>` is a wrapper around the `assign_cell` method in `TableLayouter<F>`. It takes a more flexible closure `to` that returns a `Value<VR>`, and converts it to a `Value<Assigned<F>>` before passing it to the underlying `TableLayouter<F>`. This allows for more convenient value assignment in the context of the table. |
 
-#### Layouter and NamespacedLayouter
+#### 19. Layouter and NamespacedLayouter
 ```mermaid
 classDiagram
     class Layouter~F~ {
@@ -1464,7 +1566,7 @@ classDiagram
     | `fn pop_namespace(&mut self, _gadget_name: Option<String>)` | `NamespacedLayouter<'a, F, L>` | Panics if called, as only the root's `pop_namespace` should be called. | This enforces the correct namespace management by preventing direct calls to `pop_namespace` on the `NamespacedLayouter`. |
     | `fn drop(&mut self)` | `NamespacedLayouter<'a, F, L>` | Pops out of the namespace context when the `NamespacedLayouter` is dropped. | This ensures that the namespace is properly exited when the `NamespacedLayouter` goes out of scope. |
 
-#### 10. Chip
+#### 20. Chip
 - **Chip Trait**: The `Chip` trait represents a set of instructions used by gadgets in the circuit. It stores configuration and loaded state information required during circuit synthesis. The `Config` type holds the configuration for the chip, which can be derived during the `Circuit::configure` phase. The `Loaded` type holds any general chip state that needs to be loaded at the start of `Circuit::synthesize`.
 
     ```rust
