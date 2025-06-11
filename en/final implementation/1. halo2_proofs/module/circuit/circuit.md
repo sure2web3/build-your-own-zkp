@@ -1477,6 +1477,31 @@ classDiagram
     | in `TableLayouter<F>`<br><br> `fn assign_cell<'v>(&'v mut self, annotation: &'v (dyn Fn() -> String + 'v), column: TableColumn, offset: usize, to: &'v mut (dyn FnMut() -> Value<Assigned<F>> + 'v)) -> Result<(), Error>` | Assigns a fixed value to a table cell. Returns an error if the table cell has already been assigned to. | In Halo2, tables are used to perform lookup operations. The `assign_cell` method is used to populate the table with fixed values. Each cell in the table can only be assigned once to ensure the integrity of the table data. |
     | in `Table<F>`<br><br> `pub fn assign_cell<'v, V, VR, A, AR>(&'v mut self, annotation: A, column: TableColumn, offset: usize, mut to: V) -> Result<(), Error>` | Assigns a fixed value to a table cell. Returns an error if the table cell has already been assigned to. The `to` function is guaranteed to be called at most once. | This method in `Table<F>` is a wrapper around the `assign_cell` method in `TableLayouter<F>`. It takes a more flexible closure `to` that returns a `Value<VR>`, and converts it to a `Value<Assigned<F>>` before passing it to the underlying `TableLayouter<F>`. This allows for more convenient value assignment in the context of the table. |
 
+#### 19. SimpleTableLayouter
+
+- **SimpleTableLayouter**: A concrete implementation of the `TableLayouter<F>` trait designed for simple table assignments in Halo2 circuits. It manages the assignment of fixed values to table cells and tracks which cells have been assigned.
+    ```rust
+    /// This type alias is used to track the default value (row 0) for each table column.
+    type DefaultTableValue<F> = Option<Value<Assigned<F>>>;
+
+    pub(crate) struct SimpleTableLayouter<'r, 'a, F: Field, CS: Assignment<F> + 'a> {
+        /// A mutable reference to the constraint system used for assigning values.
+        cs: &'a mut CS,
+        /// A reference to an array of table columns that have already been used, preventing reuse.
+        used_columns: &'r [TableColumn],
+        /// maps from a fixed column to a pair (default value, vector saying which rows are assigned)
+        pub(crate) default_and_assigned: HashMap<TableColumn, (DefaultTableValue<F>, Vec<bool>)>,
+    }
+    ```
+
+- **Functions**:
+
+    | Function Signature | Struct | Functionality | Principle in Halo2 |
+    | --- | --- | --- | --- |
+    | `pub(crate) fn new(cs: &'a mut CS, used_columns: &'r [TableColumn]) -> Self` | `SimpleTableLayouter` | Creates a new `SimpleTableLayouter` instance. | Initializes the layouter with a reference to the constraint system and an array of used columns to prevent reuse. |
+    | `fn assign_cell<'v>(&'v mut self, annotation: &'v (dyn Fn() -> String + 'v), column: TableColumn, offset: usize, to: &'v mut (dyn FnMut() -> Value<Assigned<F>> + 'v)) -> Result<(), Error>` | `SimpleTableLayouter` | Assigns a fixed value to a table cell at the specified offset. | Checks if the column has already been used and returns an error if it has.<br><br> Assigns the value to the constraint system using `assign_fixed`.<br><br> Sets the default value for the column if it's the first assignment at row 0.<br><br> Tracks which rows have been assigned using a boolean vector. |
+    | `pub(crate) fn compute_table_lengths<F: Debug>(default_and_assigned: &HashMap<TableColumn, (DefaultTableValue<F>, Vec<bool>)>) -> Result<usize, Error>` | Module Function | Computes the length of a table by ensuring all columns have the same length and are fully assigned. | Verifies that each column has a default value and all rows are assigned.<br><br> Checks that all columns have the same length.<br><br> Returns the length of the table if all checks pass, otherwise returns an error. |
+
 #### 19. Layouter and NamespacedLayouter
 ```mermaid
 classDiagram
