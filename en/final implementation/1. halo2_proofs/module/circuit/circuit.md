@@ -1252,6 +1252,155 @@ classDiagram
     ```
 
 #### 15. RegionLayouter
+```mermaid
+classDiagram
+    %% Traits
+    class RegionLayouter{
+        <<trait>>
+        - F: Field
+        + enable_selector(annotation, selector, offset) Result<(), Error>
+        + assign_advice(annotation, column, offset, to) Result<Cell, Error>
+        + assign_advice_from_constant(annotation, column, offset, constant) Result<Cell, Error>
+        + assign_advice_from_instance(annotation, instance, row, advice, offset) Result<(Cell, Value<F>), Error>
+        + instance_value(instance, row) Result<Value<F>, Error>
+        + assign_fixed(annotation, column, offset, to) Result<Cell, Error>
+        + constrain_constant(cell, constant) Result<(), Error>
+        + constrain_equal(left, right) Result<(), Error>
+    }
+    
+    %% Structs
+    class RegionShape{
+        <<struct>>
+        - region_index: RegionIndex
+        - columns: HashSet<RegionColumn>
+        - row_count: usize
+        + new(region_index) Self
+        + region_index() RegionIndex
+        + columns() &HashSet<RegionColumn>
+        + row_count() usize
+    }
+    
+    class RegionColumn{
+        <<enum>>
+        - Column(Column<Any>)
+        - Selector(Selector)
+    }
+    
+    class Column{
+        <<struct>>
+        - index: usize
+        - column_type: ColumnType
+    }
+    
+    class ColumnType{
+        <<enum>>
+        - Advice
+        - Instance
+        - Fixed
+    }
+    
+    class Cell{
+        <<struct>>
+        - region_index: RegionIndex
+        - row_offset: usize
+        - column: Column<Any>
+    }
+    
+    class Value{
+        <<struct>>
+        - inner: Option<V>
+        + unknown() Self
+        + known(value: V) Self
+    }
+    
+    class Assigned{
+        <<struct>>
+        - F: Field
+        - numerator: F
+        - denominator: F
+    }
+    
+    class Selector{
+        <<struct>>
+        - index: usize
+    }
+    
+    class RegionIndex{
+        <<struct>>
+        - index: usize
+    }
+    
+    class Error{
+        <<enum>>
+        - Synthesis
+        - InvalidInstances
+        - ConstraintSystemFailure
+        - ...
+    }
+    
+    class HashSet{
+        <<external>>
+    }
+    
+    %% Relationships
+    RegionLayouter <|.. RegionShape : implements
+    RegionShape --> RegionColumn : columns
+    RegionShape --> RegionIndex : region_index
+    RegionShape --> HashSet : columns
+    RegionShape --> Cell : returns
+    
+    RegionColumn --> Column : Column variant
+    RegionColumn --> Selector : Selector variant
+    
+    Cell --> RegionIndex : region_index
+    Cell --> Column : column
+    
+    Column --> ColumnType : column_type
+    
+    Value --> Error : returns
+    Value --> Assigned : contains
+```
+
+- **RegionLayouter<F>**: A trait that defines the interface for implementing a custom region layouter in a Halo2 circuit. It provides methods for enabling selectors, assigning advice, fixed, and instance columns, and creating equality constraints between cells. This trait abstracts the process of assigning values to columns and enforcing constraints within a region of the circuit.
+
+- **RegionShape**: A struct that represents the shape of a region in a Halo2 circuit. It tracks the region index, the set of columns used by the region (including both concrete columns and selectors), and the number of rows used. This struct is used to analyze the structure of a region without actually assigning values, which is useful for circuit planning and optimization.
+    ```rust
+    /// The shape of a region. For a region at a certain index, we track
+    /// the set of columns it uses as well as the number of rows it uses.
+    #[derive(Clone, Debug)]
+    pub struct RegionShape {
+        pub(super) region_index: RegionIndex,
+        pub(super) columns: HashSet<RegionColumn>,
+        pub(super) row_count: usize,
+    }
+    ```
+- **RegionColumn**: An enum that represents the types of columns involved in a region. It can be either a concrete column (advice, instance, or fixed) or a selector. This enum allows regions to track both types of columns uniformly.
+    ```rust
+    /// The virtual column involved in a region. This includes concrete columns,
+    /// as well as selectors that are not concrete columns at this stage.
+    #[derive(Eq, PartialEq, Copy, Clone, Debug, Hash)]
+    pub enum RegionColumn {
+        /// Concrete column
+        Column(Column<Any>),
+        /// Virtual column representing a (boolean) selector
+        Selector(Selector),
+    }
+    ```
+- **Functions**:
+    | Function Signature | Class/Struct | Functionality | Principle in Halo2 |
+    | --- | --- | --- | --- |
+    | `fn enable_selector(&mut self, annotation, selector, offset) -> Result<(), Error>` | `RegionLayouter` | Enables a selector at the given offset within the region. | Selectors are used to conditionally enable constraints in specific rows, allowing the circuit to perform different operations based on the input. |
+    | `fn assign_advice(&mut self, annotation, column, offset, to) -> Result<Cell, Error>` | `RegionLayouter` | Assigns a value to an advice column at the given offset. | Advice columns store witness values, which are the private inputs to the circuit that need to be proven without revealing. |
+    | `fn assign_advice_from_constant(&mut self, annotation, column, offset, constant) -> Result<Cell, Error>` | `RegionLayouter` | Assigns a constant value to an advice column and equality-constrains it. | This allows the circuit to use public constants while maintaining the structure of advice columns. |
+    | `fn assign_advice_from_instance(&mut self, annotation, instance, row, advice, offset) -> Result<(Cell, Value<F>), Error>` | `RegionLayouter` | Assigns the value from an instance column to an advice column and equality-constrains them. | Instance columns store public inputs, and this method allows the circuit to reference and use those inputs. |
+    | `fn instance_value(&mut self, instance, row) -> Result<Value<F>, Error>` | `RegionLayouter` | Retrieves the value from an instance column at the specified row. | This allows the circuit to access public inputs during synthesis. |
+    | `fn assign_fixed(&mut self, annotation, column, offset, to) -> Result<Cell, Error>` | `RegionLayouter` | Assigns a value to a fixed column at the given offset. | Fixed columns store values that are the same across all instances of the circuit, such as constants and precomputed values. |
+    | `fn constrain_constant(&mut self, cell, constant) -> Result<(), Error>` | `RegionLayouter` | Constrains a cell to have a specific constant value. | This ensures that a particular cell in the circuit always evaluates to the specified constant. |
+    | `fn constrain_equal(&mut self, left, right) -> Result<(), Error>` | `RegionLayouter` | Constrains two cells to have the same value. | This enforces that the values in the two specified cells must be equal, which is a fundamental operation for building circuit constraints. |
+    | `fn new(region_index) -> Self` | `RegionShape` | Creates a new `RegionShape` for a region with the given index. | Initializes the region shape with the specified index and empty column and row tracking. |
+    | `fn region_index(&self) -> RegionIndex` | `RegionShape` | Returns the region index of the shape. | Provides access to the region index for external use. |
+    | `fn columns(&self) -> &HashSet<RegionColumn>` | `RegionShape` | Returns a reference to the set of columns used by the region. | Allows external code to inspect the columns used by the region. |
+    | `fn row_count(&self) -> usize` | `RegionShape` | Returns the number of rows used by the region. | Provides information about the size of the region. |
 
 #### 16. Region
 
