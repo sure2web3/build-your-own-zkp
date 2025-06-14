@@ -402,9 +402,321 @@ In Halo2, **columns** are fundamental structures that organize data in a circuit
     | `push_namespace` | Creates a new (sub)namespace and enters into it for organizing assignments. Not intended for downstream consumption; use [`Layouter::namespace`] instead. | `name_fn: N` where `NR: Into<String>` and `N: FnOnce() -> NR` | `()` | Namespaces are used to organize and isolate different parts of the circuit. Pushing a new namespace allows for better modularity and separation of concerns in the circuit design. |
     | `pop_namespace` | Exits out of the existing namespace. Not intended for downstream consumption; use [`Layouter::namespace`] instead. | `gadget_name: Option<String>` | `()` | Marks the end of a namespace, ensuring proper scoping and organization of the circuit components within namespaces. It helps in maintaining a clean and structured circuit layout. |
 
-#### 6. FloorPlanner 
+#### 6. FloorPlanner and V1
+```mermaid
+classDiagram
+    %% Traits
+    class FloorPlanner {
+        <<trait>>
+        +synthesize<F:Field, CS:Assignment<F>, C:Circuit<F>>(cs:&mut CS, circuit:&C, config:C::Config, constants:Vec<Column<Fixed>>):Result<(), Error>
+    }
+    
+    class Layouter {
+        <<trait>>
+        - F: Field
+        +assign_region<A, AR, N, NR>(name:N, assignment:A):Result<AR, Error>
+        +assign_table<A, N, NR>(name:N, assignment:A):Result<(), Error>
+        +constrain_instance(cell:Cell, instance:Column<Instance>, row:usize):Result<(), Error>
+        +get_root():&mut Self::Root
+        +push_namespace<NR, N>(name_fn:N)
+        +pop_namespace(gadget_name:Option<String>)
+    }
+    
+    class RegionLayouter {
+        <<trait>>
+        - F: Field
+        +enable_selector<'v>(annotation:&'v (dyn Fn() -> String + 'v), selector:&Selector, offset:usize):Result<(), Error>
+        +assign_advice<'v>(annotation:&'v (dyn Fn() -> String + 'v), column:Column<Advice>, offset:usize, to:&'v mut (dyn FnMut() -> Value<Assigned<F>> + 'v)):Result<Cell, Error>
+        +assign_advice_from_constant<'v>(annotation:&'v (dyn Fn() -> String + 'v), column:Column<Advice>, offset:usize, constant:Assigned<F>):Result<Cell, Error>
+        +assign_advice_from_instance<'v>(annotation:&'v (dyn Fn() -> String + 'v), instance:Column<Instance>, row:usize, advice:Column<Advice>, offset:usize):Result<(Cell, Value<F>), Error>
+        +instance_value(instance:Column<Instance>, row:usize):Result<Value<F>, Error>
+        +assign_fixed<'v>(annotation:&'v (dyn Fn() -> String + 'v), column:Column<Fixed>, offset:usize, to:&'v mut (dyn FnMut() -> Value<Assigned<F>> + 'v)):Result<Cell, Error>
+        +constrain_constant(cell:Cell, constant:Assigned<F>):Result<(), Error>
+        +constrain_equal(left:Cell, right:Cell):Result<(), Error>
+    }
+    
+    class TableLayouter {
+        <<trait>>
+        - F: Field
+        +assign_cell<'v>(annotation:&'v (dyn Fn() -> String + 'v), column:TableColumn, offset:usize, to:&'v mut (dyn FnMut() -> Value<Assigned<F>> + 'v)):Result<(), Error>
+    }
+    
+    %% Main Classes
+    class V1 {
+        <<struct>>
+        +synthesize<F:Field, CS:Assignment<F>, C:Circuit<F>>(cs:&mut CS, circuit:&C, config:C::Config, constants:Vec<Column<Fixed>>):Result<(), Error>
+    }
+    
+    class V1Plan {
+        <<struct>>
+        - 'a
+        - F: Field
+        - CS: Assignment<F>
+        - cs: &'a mut CS
+        - regions: Vec<RegionStart>
+        - constants: Vec<(Assigned<F>, Cell)>
+        - table_columns: Vec<TableColumn>
+        +new(cs:&'a mut CS):Result<Self, Error>
+    }
+    
+    class SimpleFloorPlanner {
+        <<struct>>
+        +synthesize<F:Field, CS:Assignment<F>, C:Circuit<F>>(cs:&mut CS, circuit:&C, config:C::Config, constants:Vec<Column<Fixed>>):Result<(), Error>
+    }
+    
+    class SingleChipLayouter {
+        <<struct>>
+        - 'a
+        - F: Field
+        - CS: Assignment<F>
+        - cs: &'a mut CS
+        - constants: Vec<Column<Fixed>>
+        - regions: Vec<RegionStart>
+        - columns: HashMap<RegionColumn, usize>
+        - table_columns: Vec<TableColumn>
+        - _marker: PhantomData<F>
+        +new(cs:&'a mut CS, constants:Vec<Column<Fixed>>):Result<Self, Error>
+    }
+    
+    class V1Pass {
+        <<struct>>
+        - 'p, 'a
+        - F: Field
+        - CS: Assignment<F>
+        - pass: Pass<'p, 'a, F, CS>
+        +measure(pass:&'p mut MeasurementPass):Self
+        +assign(pass:&'p mut AssignmentPass<'p, 'a, F, CS>):Self
+    }
+    
+    class MeasurementPass {
+        <<struct>>
+        - regions: Vec<RegionShape>
+        +new():Self
+        +assign_region<F:Field, A, AR>(assignment:A):Result<AR, Error>
+    }
+    
+    class AssignmentPass {
+        <<struct>>
+        - 'p, 'a
+        - F: Field
+        - CS: Assignment<F>
+        - plan: &'p mut V1Plan<'a, F, CS>
+        - region_index: usize
+        +new(plan:&'p mut V1Plan<'a, F, CS>):Self
+        +assign_region<A, AR, N, NR>(name:N, assignment:A):Result<AR, Error>
+        +assign_table<A, AR, N, NR>(name:N, assignment:A):Result<AR, Error>
+        +constrain_instance(cell:Cell, instance:Column<Instance>, row:usize):Result<(), Error>
+    }
+    
+    class SingleChipLayouterRegion {
+        <<struct>>
+        - 'r, 'a
+        - F: Field
+        - CS: Assignment<F>
+        - layouter: &'r mut SingleChipLayouter<'a, F, CS>
+        - region_index: RegionIndex
+        - constants: Vec<(Assigned<F>, Cell)>
+        +new(layouter:&'r mut SingleChipLayouter<'a, F, CS>, region_index:RegionIndex):Self
+    }
+    
+    class V1Region {
+        <<struct>>
+        - 'r, 'a
+        - F: Field
+        - CS: Assignment<F>
+        - plan: &'r mut V1Plan<'a, F, CS>
+        - region_index: RegionIndex
+        +new(plan:&'r mut V1Plan<'a, F, CS>, region_index:RegionIndex):Self
+    }
+    
+    %% Helper Classes
+    class RegionShape {
+        <<struct>>
+        - region_index: RegionIndex
+        - columns: HashSet<RegionColumn>
+        - row_count: usize
+        +new(region_index:RegionIndex):Self
+        +region_index():RegionIndex
+        +columns():&HashSet<RegionColumn>
+        +row_count():usize
+    }
+    
+    class RegionColumn {
+        <<enum>>
+        - Column(Column<Any>)
+        - Selector(Selector)
+    }
+    
+    class Cell {
+        <<struct>>
+        - region_index: RegionIndex
+        - row_offset: usize
+        - column: Column<Any>
+    }
+    
+    class Column {
+        <<struct>>
+        - index: usize
+        - column_type: Any
+    }
+    
+    class Any {
+        <<enum>>
+        - Advice
+        - Instance
+        - Fixed
+    }
+    
+    class RegionIndex {
+        <<struct>>
+        - index: usize
+    }
+    
+    class RegionStart {
+        <<struct>>
+        - start: usize
+    }
+    
+    class Selector {
+        <<struct>>
+        - index: usize
+    }
+    
+    class Value {
+        <<struct>>
+        - inner: Option<V>
+        +unknown():Self
+        +known(value:V):Self
+    }
+    
+    class Assigned {
+        <<struct>>
+        - F: Field
+        - numerator: F
+        - denominator: F
+        +evaluate():F
+    }
+    
+    class Error {
+        <<enum>>
+        - NotEnoughColumnsForConstants
+        - TableError(TableError)
+        - Synthesis
+        - ...
+    }
+    
+    class TableColumn {
+        <<struct>>
+        - column: Column<Fixed>
+        - rotation: Rotation
+    }
+    
+    %% Allocation Classes
+    class AllocatedRegion {
+        <<struct>>
+        - start: usize
+        - length: usize
+    }
+    
+    class EmptySpace {
+        <<struct>>
+        - start: usize
+        - end: Option<usize>
+        +range():Option<Range<usize>>
+    }
+    
+    class Allocations {
+        <<struct>>
+        - allocations: BTreeSet<AllocatedRegion>
+        +unbounded_interval_start():usize
+        +free_intervals(start:usize, end:Option<usize>):Iterator<Item=EmptySpace>
+    }
+    
+    class CircuitAllocations {
+        <<type>>
+        HashMap<RegionColumn, Allocations>
+    }
+    
+    %% Relationships
+    FloorPlanner <|.. V1 : implements
+    FloorPlanner <|.. SimpleFloorPlanner : implements
+    
+    Layouter <|.. V1Pass : implements
+    Layouter <|.. SingleChipLayouter : implements
+    
+    RegionLayouter <|.. RegionShape : implements
+    RegionLayouter <|.. SingleChipLayouterRegion : implements
+    RegionLayouter <|.. V1Region : implements
+    
+    TableLayouter <|.. SimpleTableLayouter : implements
+    
+    V1 o-- V1Plan : uses
+    V1Plan o-- AssignmentPass : uses
+    V1Plan o-- V1Region : uses
+    V1Plan "1" *-- "n" TableColumn : contains
+    V1Plan "1" *-- "n" Assigned : contains
+    V1Plan "1" *-- "n" Cell : contains
+    V1Plan "1" *-- "n" RegionStart : contains
+    
+    SingleChipLayouter o-- SingleChipLayouterRegion : uses
+    SingleChipLayouter "1" *-- "n" TableColumn : contains
+    SingleChipLayouter "1" *-- "n" RegionStart : contains
+    SingleChipLayouter "1" *-- "n" Column : key(columns)
+    SingleChipLayouter "1" *-- "n" RegionColumn : value(columns)
+    
+    V1Pass "1" -- "1" MeasurementPass : uses(measure)
+    V1Pass "1" -- "1" AssignmentPass : uses(assign)
+    
+    MeasurementPass "1" *-- "n" RegionShape : contains
+    
+    AssignmentPass "1" -- "1" V1Plan : uses
+    AssignmentPass "1" *-- "n" TableColumn : uses(assign_table)
+    
+    SingleChipLayouterRegion "1" -- "1" SingleChipLayouter : uses
+    SingleChipLayouterRegion "1" *-- "n" Assigned : contains
+    SingleChipLayouterRegion "1" *-- "n" Cell : contains
+    
+    V1Region "1" -- "1" V1Plan : uses
+    V1Region "1" *-- "n" Assigned : contains
+    V1Region "1" *-- "n" Cell : contains
+    
+    RegionShape "1" *-- "n" RegionColumn : contains
+    RegionShape "1" -- "1" RegionIndex : contains
+    
+    Cell "1" -- "1" RegionIndex : contains
+    Cell "1" -- "1" Column : contains
+    
+    Column "1" -- "1" Any : contains
+    
+    RegionColumn "1" -- "1" Column : variant(Column)
+    RegionColumn "1" -- "1" Selector : variant(Selector)
+    
+    Allocations "1" *-- "n" AllocatedRegion : contains
+    CircuitAllocations "1" *-- "1" RegionColumn : key
+    CircuitAllocations "1" *-- "1" Allocations : value
+    
+    AllocatedRegion "1" -- "1" EmptySpace : relates
+    EmptySpace "1" -- "1" Allocations : used by
+    
+    Selector "1" -- "1" RegionColumn : used by
+    Selector "1" -- "1" RegionLayouter : used by(enable_selector)
+    
+    Value "1" -- "1" RegionLayouter : returns(assign_advice)
+    Value "1" -- "1" Assigned : contained in
+    
+    Assigned "1" -- "1" Value : contained in
+    Assigned "1" -- "1" RegionLayouter : used by(assign_advice_from_constant)
+    
+    Error "1" -- "1" FloorPlanner : returns(synthesize)
+    Error "1" -- "1" Layouter : returns(assign_region)
+    Error "1" -- "1" RegionLayouter : returns(enable_selector)
+    
+    TableColumn "1" -- "1" Column : contains
+    TableColumn "1" -- "1" TableLayouter : used by(assign_cell)
+```
+
 - **FloorPlanner Trait**: The `FloorPlanner` trait defines a floor planning strategy for a circuit. It is chip - agnostic and applies its strategy to the circuit it is used within. The main function of this trait is the `synthesize` method, which takes a constraint system (`CS`), a circuit (`C`), a configuration object (`config`), and a list of fixed columns (`constants`). 
-* `synthesize` refers to the process of constructing a circuit by assigning values to the various components of the circuit and enforcing the necessary constraints. This process is crucial for creating zero - knowledge proofs, as it allows the prover to demonstrate knowledge of a solution to a given problem without revealing the actual solution.
+    * `synthesize` refers to the process of constructing a circuit by assigning values to the various components of the circuit and enforcing the necessary constraints. This process is crucial for creating zero - knowledge proofs, as it allows the prover to demonstrate knowledge of a solution to a given problem without revealing the actual solution.
     ```rust 
     pub trait FloorPlanner {
         /// Given the provided `cs`, synthesize the given circuit.
@@ -430,7 +742,157 @@ In Halo2, **columns** are fundamental structures that organize data in a circuit
         - Performs any necessary setup or measurement tasks, which might involve one or more calls to `Circuit::default().synthesize(config, &mut layouter)`.
         - Calls `circuit.synthesize(config, &mut layouter)` exactly once.
 
-* In Halo2, the `FloorPlanner` is responsible for determining how the circuit components are arranged in the circuit layout. It helps in optimizing the use of resources such as columns and rows in the circuit, and it orchestrates the `synthesis` process of the circuit. Different implementations of the `FloorPlanner` can lead to different circuit layouts, which can affect the performance and efficiency of the circuit.
+    * In Halo2, the `FloorPlanner` is responsible for determining how the circuit components are arranged in the circuit layout. It helps in optimizing the use of resources such as columns and rows in the circuit, and it orchestrates the `synthesis` process of the circuit. Different implementations of the `FloorPlanner` can lead to different circuit layouts, which can affect the performance and efficiency of the circuit.
+
+- **V1**: `V1` is the main, production-ready floor planner in Halo2. It uses a dual-pass approach: first, it measures the shape and requirements of each region (measurement pass), then it assigns regions and constants according to a greedy, first-fit strategy sorted by advice area (assignment pass). It optimizes layout by prioritizing regions with more advice columns. This ensures efficient and correct region placement and constant assignment.
+    ```rust
+    /// The version 1 [`FloorPlanner`] provided by `halo2`.
+    ///
+    /// - No column optimizations are performed. Circuit configuration is left entirely to the
+    ///   circuit designer.
+    /// - A dual-pass layouter is used to measures regions prior to assignment.
+    /// - Regions are measured as rectangles, bounded on the cells they assign.
+    /// - Regions are laid out using a greedy first-fit strategy, after sorting regions by
+    ///   their "advice area" (number of advice columns * rows).
+    #[derive(Debug)]
+    pub struct V1;
+    ```
+    - **strategy**: This module provides algorithms and data structures for region placement within the V1 floor planner. It defines how regions are allocated in columns, tracks empty spaces, and implements the "slot in biggest advice first" strategy to efficiently lay out regions and minimize column contention. The strategy module is essential for the planning phase, ensuring that all regions are placed without overlap and that the circuit layout is as compact as possible.
+
+- **V1Plan**: `V1Plan<'a, F, CS>` Stores state for the V1 floor planner, including the constraint system, region starts, constants to assign, and table columns. It coordinates the two-pass synthesis process.
+    ```rust
+    struct V1Plan<'a, F: Field, CS: Assignment<F> + 'a> {
+        cs: &'a mut CS,
+        /// Stores the starting row for each region.
+        regions: Vec<RegionStart>,
+        /// Stores the constants to be assigned, and the cells to which they are copied.
+        constants: Vec<(Assigned<F>, Cell)>,
+        /// Stores the table fixed columns.
+        table_columns: Vec<TableColumn>,
+    }
+    ```
+
+- **Pass**: The `Pass` enum represents the current phase of the V1 floor planner. It can be either a `Measurement` pass, which collects information about the shape and requirements of each region, or an `Assignment` pass, which performs the actual assignment of values to the circuit according to the plan. This abstraction allows the same interface to be used for both phases, switching behavior based on the current pass.
+    ```rust
+    #[derive(Debug)]
+    enum Pass<'p, 'a, F: Field, CS: Assignment<F> + 'a> {
+        Measurement(&'p mut MeasurementPass),
+        Assignment(&'p mut AssignmentPass<'p, 'a, F, CS>),
+    }
+    ```
+
+- **V1Pass**: V1Pass is a wrapper struct that encapsulates a single pass (either measurement or assignment) of the V1 layouter. It provides methods to construct a measurement or assignment pass and implements the Layouter trait, dispatching region and table assignments to the correct underlying logic depending on the phase.
+    ```rust
+    /// A single pass of the [`V1`] layouter.
+    #[derive(Debug)]
+    pub struct V1Pass<'p, 'a, F: Field, CS: Assignment<F> + 'a>(Pass<'p, 'a, F, CS>);
+    ```
+    - **Functions**:
+
+    | Function Name         | Purpose/Role                                                                                  | Execution Logic                                                                                                      | Function in Halo2                                                                                      |
+    |---------------------- |----------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------|
+    | measure               | Constructs a `V1Pass` in measurement mode                                                    | Wraps a mutable reference to `MeasurementPass` in the `Pass::Measurement` variant                                   | Used to collect region shape information during the first pass                                         |
+    | assign                | Constructs a `V1Pass` in assignment mode                                                     | Wraps a mutable reference to `AssignmentPass` in the `Pass::Assignment` variant                                     | Used to perform actual assignments during the second pass                                              |
+    | assign_region         | Assigns a region in the circuit                                                              | Delegates to either `MeasurementPass::assign_region` or `AssignmentPass::assign_region` based on the current phase  | Handles region assignment, collecting shape info or performing assignments as needed                   |
+    | assign_table          | Assigns a lookup table in the circuit                                                        | Delegates to `AssignmentPass::assign_table` in assignment phase; does nothing in measurement phase                  | Ensures tables are assigned and checked for consistency during circuit synthesis                       |
+    | constrain_instance    | Constrains an advice cell to equal an instance cell                                          | Delegates to `AssignmentPass::constrain_instance` in assignment phase; does nothing in measurement phase            | Used to link advice cells to public inputs (instance columns)                                          |
+    | get_root              | Returns a mutable reference to the root layouter                                             | Simply returns `self`                                                                                                | Required by the `Layouter` trait for recursive namespace management                                    |
+    | push_namespace        | Pushes a namespace for debugging or logical grouping                                         | Calls `push_namespace` on the underlying constraint system in assignment phase; does nothing in measurement phase    | Helps organize and debug circuit synthesis by grouping related assignments                             |
+    | pop_namespace         | Pops the current namespace                                                                   | Calls `pop_namespace` on the underlying constraint system in assignment phase; does nothing in measurement phase     | Complements `push_namespace` for managing logical/debugging scopes in the circuit                      |
+
+- **MeasurementPass**: MeasurementPass is responsible for the first phase of the V1 floor planner. It collects the shape (columns and rows used) of each region by simulating the circuit layout without assigning actual values. This information is used to plan region placement and ensure efficient, conflict-free assignments in the next phase.
+    ```rust
+    /// Measures the circuit.
+    #[derive(Debug)]
+    pub struct MeasurementPass {
+        regions: Vec<RegionShape>,
+    }
+    ```
+    - **Functions**:
+
+    | Function Name   | Purpose/Role                                                      | Execution Logic                                                                                                  | Function in Halo2                                                      |
+    |-----------------|-------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------|
+    | new             | Creates a new `MeasurementPass`                                   | Initializes the `regions` vector as empty and returns a new `MeasurementPass` instance                          | Used to start the measurement phase with no regions measured yet        |
+    | assign_region   | Measures the shape of a region during the measurement phase       | - Determines the next region index<br>- Creates a new `RegionShape` for this region<br>- Calls the assignment closure with a mutable reference to the region shape<br>- Stores the measured shape in `regions`<br>- Returns the result of the closure | Collects information about which columns and how many rows each region uses, for planning the circuit layout |
+
+- **AssignmentPass**: AssignmentPass handles the second phase of the V1 floor planner. Using the plan created during measurement, it assigns values to regions and tables, manages table column usage, and ensures all assignments follow the measured plan. It also handles copying values for instance constraints and filling in default values for tables.
+    ```rust
+    /// Assigns the circuit.
+    #[derive(Debug)]
+    pub struct AssignmentPass<'p, 'a, F: Field, CS: Assignment<F> + 'a> {
+        plan: &'p mut V1Plan<'a, F, CS>,
+        /// Counter tracking which region we need to assign next.
+        region_index: usize,
+    }
+    ```
+    - **Functions**:
+
+    | Function Name   | Purpose/Role                                                      | Execution Logic                                                                                                  | Function in Halo2                                                      |
+    |-----------------|-------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------|
+    | new             | Creates a new `AssignmentPass`                                    | Initializes the `plan` reference and sets `region_index` to 0                                                   | Prepares the assignment phase with a fresh counter and plan reference   |
+    | assign_region   | Assigns a region in the circuit                                   | - Gets the next region index<br>- Increments the region counter<br>- Enters the region in the constraint system<br>- Creates a new `V1Region`<br>- Calls the assignment closure with a mutable reference to the region<br>- Exits the region<br>- Returns the result of the closure | Performs the actual assignment of values to a region during synthesis   |
+    | assign_table    | Assigns a lookup table in the circuit                             | - Enters the region in the constraint system<br>- Creates a `SimpleTableLayouter`<br>- Calls the assignment closure<br>- Exits the region<br>- Checks that all table columns have the same length<br>- Records used columns<br>- Fills in default values for unassigned cells | Ensures lookup tables are assigned correctly and consistently           |
+    | constrain_instance | Constrains an advice cell to equal an instance cell            | Calls `copy` on the constraint system to link the advice cell to the instance cell, using the correct region and row offsets | Used to link advice cells to public inputs (instance columns)           |
+
+- **V1Region**: `V1Region` is a struct that represents a single region within the V1 floor planner during circuit synthesis in Halo2. It holds a reference to the overall plan and the specific region index, and implements the RegionLayouter trait. This allows V1Region to handle all assignments, constraints, and value queries for its region, translating logical region offsets into absolute positions in the circuit according to the plan. It acts as the main interface for assigning advice, fixed, and instance values, as well as enforcing constraints within a region during the assignment phase. 
+    ```rust
+    struct V1Region<'r, 'a, F: Field, CS: Assignment<F> + 'a> {
+        plan: &'r mut V1Plan<'a, F, CS>,
+        region_index: RegionIndex,
+    }
+    ```
+    - **Functions**:
+
+    | Function Name                | Purpose/Role                                                      | Execution Logic                                                                                                  | Function in Halo2                                                      |
+    |------------------------------|-------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------|
+    | new                          | Creates a new V1Region instance                                   | Stores a mutable reference to the plan and the region index                                                     | Prepares a region layouter for assignments in a specific region        |
+    | enable_selector              | Enables a selector at a given offset in the region                | Calls enable_selector on the constraint system with the correct absolute row offset                             | Activates a selector for constraints at a specific row in the region   |
+    | assign_advice                | Assigns a value to an advice column at a given offset             | Calls assign_advice on the constraint system with the correct absolute row offset, returns a Cell               | Assigns witness values to advice columns in the region                 |
+    | assign_advice_from_constant  | Assigns a constant value to an advice column                      | Calls assign_advice with a closure returning the constant, then constrains the cell to that constant            | Used for copying constants into advice columns                         |
+    | assign_advice_from_instance  | Assigns a value from an instance column to an advice column       | Queries the instance value, assigns it to advice, and copies the value from instance to advice cell             | Links public inputs to advice columns in the region                    |
+    | instance_value               | Queries the value of an instance column at a given row            | Calls query_instance on the constraint system                                                                   | Reads public input values for use in the region                        |
+    | assign_fixed                 | Assigns a value to a fixed column at a given offset               | Calls assign_fixed on the constraint system with the correct absolute row offset, returns a Cell                | Assigns fixed values (constants) to fixed columns in the region        |
+    | constrain_constant           | Constrains a cell to a constant value                            | Pushes the (constant, cell) pair to the plan's constants list                                                   | Used for enforcing constant constraints in the region                  |
+    | constrain_equal              | Constrains two cells to be equal                                  | Calls copy on the constraint system to link the two cells at their absolute positions                           | Enforces equality constraints between cells in the region              |
+
+- **synthesize of V1**: This function in Halo2 is responsible for laying out and assigning all regions, tables, and constants in a circuit using the V1 floor planning strategy. It performs a two-pass process: first, it measures the shape and requirements of each region (without assigning values), then it plans and assigns all regions and constants efficiently to avoid overlaps and ensure correct placement. This function ensures that the circuit is synthesized in a way that is both correct and optimized for the available columns, handling all region and constant assignments according to the V1 strategy. Step-by-Step Execution Flow are as follows:
+    ```mermaid
+    flowchart TD
+        A[Create V1Plan] --> B[First Pass: Measurement]
+        B --> C[Run circuit.synthesize without witnesses<br/>using MeasurementPass]
+        C --> D[Planning: Region Placement]
+        D --> E[Use slot_in_biggest_advice_first<br/>to sort and place regions]
+        E --> F[Update plan.regions with region start positions]
+        F --> G[Determine Required Rows]
+        G --> H[Find highest unassigned row across all columns]
+        H --> I[Plan Constant Placement]
+        I --> J[For each fixed column,<br/>find available positions for constants]
+        J --> K[Second Pass: Assignment]
+        K --> L[Run circuit.synthesize with AssignmentPass]
+        L --> M[Assign Constants]
+        M --> N{Enough positions for all constants?}
+        N -- No --> O[Return Error: NotEnoughColumnsForConstants]
+        N -- Yes --> P[Assign each constant<br/>and copy to advice cell]
+        P --> Q[Finish: Return Ok]
+
+        style A fill:#e0eaff
+        style Q fill:#d2ffd2
+        style O fill:#ffd2d2
+    ```
+    1. **Create a V1Plan**: Initialize a new plan object that will track region starts, constants, and table columns for the circuit.
+    2. **First Pass – Measurement**: Create a MeasurementPass to measure the shape (columns and rows used) of each region in the circuit. 
+        * The circuit is synthesized without witnesses, using a special measurement pass to collect region information.
+    3. **Planning – Region Placement**: Use the strategy module to determine how to position regions in the circuit.
+        * The `slot_in_biggest_advice_first` function sorts and places regions to minimize column contention and overlap.
+        * The plan’s region start positions are updated.
+    4. **Determine Required Rows**: Calculate the total number of rows needed for the planned circuit by finding the highest unassigned row across all columns.
+    5. **Plan Constant Placement**: For each fixed column, determine where constants can be placed within the assigned rows, using the column allocations from the planning step.
+    6. **Second Pass – Assignment**: Create an AssignmentPass to actually assign values to regions and tables according to the plan.
+        * The circuit is synthesized again, this time with real assignments.
+    7. **Assign Constants**: Check if there are enough positions for all constants.
+        * If not, return an error.
+        * Otherwise, assign each constant to its planned position and copy its value to the appropriate advice cell.
+    8. **Finish**: Return Ok(()) if everything succeeded.
 
 #### 7. Expression
 ```mermaid
